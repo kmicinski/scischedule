@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SciSchedule</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <h1>SciSchedule</h1>
+          <p>Protocol-aware scientific planning</p>
+        </div>
+
+        <button id="new-protocol-btn" class="btn primary">New Protocol</button>
+
+        <section>
+          <h2>Recent Protocols</h2>
+          <ul id="protocol-list" class="protocol-list"></ul>
+        </section>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div class="tabs">
+            <button class="tab active" data-view="month">Month</button>
+            <button class="tab" data-view="week">Week</button>
+          </div>
+          <div class="actions">
+            <button id="lock-selected-btn" class="btn" disabled>Lock Selected Draft</button>
+            <button id="today-btn" class="btn">Today</button>
+          </div>
+        </header>
+        <div id="status-line" class="status-line"></div>
+
+        <section id="placement-panel" class="placement-panel hidden">
+          <div>
+            <strong id="placement-title">Protocol Placement</strong>
+            <p id="placement-subtitle">
+              Drag across the calendar to preview all tasks before creating the draft.
+            </p>
+          </div>
+          <label>
+            Scientist
+            <input id="placement-scientist" value="scientist" />
+          </label>
+          <div class="placement-actions">
+            <button id="placement-create" class="btn primary">Create Draft</button>
+            <button id="placement-cancel" class="btn">Cancel</button>
+          </div>
+        </section>
+        <section id="move-panel" class="placement-panel hidden">
+          <div>
+            <strong>Confirm Deviation</strong>
+            <p id="move-subtitle">Review the move and add a reason for later audit.</p>
+          </div>
+          <label>
+            Reason
+            <input id="move-reason" placeholder="Why is this step being moved?" />
+          </label>
+          <div class="placement-actions">
+            <button id="move-confirm" class="btn primary">Confirm Move</button>
+            <button id="move-cancel" class="btn">Cancel</button>
+          </div>
+        </section>
+
+        <section id="month-view" class="view active">
+          <div class="view-header">
+            <button id="month-prev" class="btn">Prev</button>
+            <h2 id="month-title"></h2>
+            <button id="month-next" class="btn">Next</button>
+          </div>
+          <div id="month-weekdays" class="month-weekdays"></div>
+          <div id="month-grid" class="month-grid"></div>
+        </section>
+
+        <section id="week-view" class="view">
+          <div class="view-header">
+            <button id="week-prev" class="btn">Prev</button>
+            <h2 id="week-title"></h2>
+            <button id="week-next" class="btn">Next</button>
+          </div>
+          <div id="week-grid" class="week-grid"></div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="protocol-dialog">
+      <form id="protocol-form" class="dialog-form">
+        <h3>Create Protocol</h3>
+        <label>Name <input name="name" required /></label>
+        <label>Description <textarea name="description" rows="2"></textarea></label>
+
+        <div id="steps-container"></div>
+        <button type="button" id="add-step" class="btn">Add Step</button>
+
+        <div class="dialog-actions">
+          <button type="button" id="cancel-protocol" class="btn">Cancel</button>
+          <button type="submit" class="btn primary">Save Protocol</button>
+        </div>
+      </form>
+    </dialog>
+
+    <template id="step-template">
+      <div class="step-card">
+        <label>Step Name <input class="step-name" required /></label>
+        <label>Details <input class="step-details" /></label>
+        <label>Depends On
+          <select class="step-parent">
+            <option value="">(root)</option>
+          </select>
+        </label>
+        <label>Offset Days <input class="step-offset" type="number" value="0" /></label>
+      </div>
+    </template>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
