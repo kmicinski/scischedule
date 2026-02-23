@@ -33,8 +33,8 @@ pub fn validate_protocol(protocol: &Protocol) -> Result<(), ScheduleError> {
     }
 
     for step in &protocol.steps {
-        if let Some(parent) = step.parent_step_id {
-            if !ids.contains(&parent) {
+        for parent in &step.parent_step_ids {
+            if !ids.contains(parent) {
                 return Err(ScheduleError::MissingParent);
             }
         }
@@ -45,9 +45,9 @@ pub fn validate_protocol(protocol: &Protocol) -> Result<(), ScheduleError> {
 
     for step in &protocol.steps {
         indegree.entry(step.id).or_insert(0);
-        if let Some(parent) = step.parent_step_id {
+        for parent in &step.parent_step_ids {
             *indegree.entry(step.id).or_insert(0) += 1;
-            children.entry(parent).or_default().push(step.id);
+            children.entry(*parent).or_default().push(step.id);
         }
     }
 
@@ -93,11 +93,16 @@ pub fn schedule_from_protocol(
 
     for step_id in order {
         let step = step_map[&step_id];
-        let date = if let Some(parent) = step.parent_step_id {
-            let parent_date = computed_dates[&parent];
-            parent_date + Duration::days(step.default_offset_days as i64)
-        } else {
+        let date = if step.parent_step_ids.is_empty() {
             start_date
+        } else {
+            let latest_parent = step
+                .parent_step_ids
+                .iter()
+                .map(|parent| computed_dates[parent])
+                .max()
+                .expect("validated protocol has parent dates");
+            latest_parent + Duration::days(step.default_offset_days as i64)
         };
 
         computed_dates.insert(step.id, date);
@@ -141,55 +146,93 @@ pub fn move_task_with_constraints(
     reason: String,
     now_ts: i64,
 ) -> Result<(), ScheduleError> {
-    let step_map: HashMap<Uuid, &ProtocolStep> = protocol.steps.iter().map(|s| (s.id, s)).collect();
-    let task_map: HashMap<Uuid, &ScheduledTask> =
-        experiment.tasks.iter().map(|t| (t.step_id, t)).collect();
-
     let idx = experiment
         .tasks
         .iter()
         .position(|t| t.id == task_id)
         .ok_or(ScheduleError::TaskNotFound)?;
 
-    let step_id = experiment.tasks[idx].step_id;
-    let step = step_map[&step_id];
+    let old_date = experiment.tasks[idx].date;
+    if old_date == new_date {
+        return Ok(());
+    }
+    let delta_days = (new_date - old_date).num_days();
 
-    if let Some(parent_id) = step.parent_step_id {
-        if let Some(parent_task) = task_map.get(&parent_id) {
-            if new_date < parent_task.date {
+    let mut children_by_parent = HashMap::<Uuid, Vec<Uuid>>::new();
+    for step in &protocol.steps {
+        for parent_id in &step.parent_step_ids {
+            children_by_parent
+                .entry(*parent_id)
+                .or_default()
+                .push(step.id);
+        }
+    }
+
+    // Moving earlier: only the dragged task shifts — downstream tasks keep their
+    // dates because the offset represents real duration (e.g. 3-day incubation).
+    // Moving later: cascade shift to all downstream tasks to maintain constraints.
+    let shifted_step_ids = if delta_days < 0 {
+        let mut s = HashSet::new();
+        s.insert(experiment.tasks[idx].step_id);
+        s
+    } else {
+        descendant_step_ids(&children_by_parent, experiment.tasks[idx].step_id)
+    };
+
+    let task_date_by_step: HashMap<Uuid, NaiveDate> =
+        experiment.tasks.iter().map(|t| (t.step_id, t.date)).collect();
+
+    for step in &protocol.steps {
+        let child_old = *task_date_by_step
+            .get(&step.id)
+            .ok_or(ScheduleError::TaskNotFound)?;
+        let child_new = if shifted_step_ids.contains(&step.id) {
+            child_old + Duration::days(delta_days)
+        } else {
+            child_old
+        };
+
+        for parent_id in &step.parent_step_ids {
+            let parent_old = *task_date_by_step
+                .get(parent_id)
+                .ok_or(ScheduleError::TaskNotFound)?;
+            let parent_new = if shifted_step_ids.contains(parent_id) {
+                parent_old + Duration::days(delta_days)
+            } else {
+                parent_old
+            };
+
+            if child_new < parent_new {
                 return Err(ScheduleError::ViolatesParentConstraint);
             }
         }
     }
 
-    for child in protocol
-        .steps
-        .iter()
-        .filter(|s| s.parent_step_id == Some(step_id))
-    {
-        if let Some(child_task) = task_map.get(&child.id) {
-            if new_date > child_task.date {
-                return Err(ScheduleError::ViolatesChildConstraint);
-            }
+    for task in &mut experiment.tasks {
+        let is_shifted = shifted_step_ids.contains(&task.step_id);
+        if is_shifted {
+            task.date += Duration::days(delta_days);
         }
+        let shifted_by_days = (task.date - task.planned_date).num_days() as i32;
+        task.deviation = if task.date != task.planned_date {
+            let reason = if is_shifted {
+                reason.clone()
+            } else {
+                task.deviation
+                    .as_ref()
+                    .map(|d| d.reason.clone())
+                    .unwrap_or_else(|| reason.clone())
+            };
+            Some(Deviation {
+                reason,
+                shifted_by_days,
+            })
+        } else {
+            None
+        };
     }
 
-    let old_date = experiment.tasks[idx].date;
-    let shift = (new_date - experiment.tasks[idx].planned_date).num_days() as i32;
-    experiment.tasks[idx].date = new_date;
-    experiment.tasks[idx].deviation = if new_date != experiment.tasks[idx].planned_date {
-        Some(Deviation {
-            reason,
-            shifted_by_days: shift,
-        })
-    } else {
-        None
-    };
-
-    // Keep day priorities stable by re-normalizing only if this task moved days.
-    if old_date != new_date {
-        normalize_day_priorities(&mut experiment.tasks);
-    }
+    normalize_day_priorities(&mut experiment.tasks);
 
     experiment.updated_at = now_ts;
     Ok(())
@@ -305,9 +348,9 @@ fn topological_steps(steps: &[ProtocolStep]) -> Vec<Uuid> {
 
     for step in steps {
         indegree.entry(step.id).or_insert(0);
-        if let Some(parent) = step.parent_step_id {
+        for parent in &step.parent_step_ids {
             *indegree.entry(step.id).or_insert(0) += 1;
-            children.entry(parent).or_default().push(step.id);
+            children.entry(*parent).or_default().push(step.id);
         }
     }
 
@@ -333,6 +376,24 @@ fn topological_steps(steps: &[ProtocolStep]) -> Vec<Uuid> {
     order
 }
 
+fn descendant_step_ids(children_by_parent: &HashMap<Uuid, Vec<Uuid>>, root: Uuid) -> HashSet<Uuid> {
+    let mut out = HashSet::new();
+    let mut queue = VecDeque::from([root]);
+
+    while let Some(step_id) = queue.pop_front() {
+        if !out.insert(step_id) {
+            continue;
+        }
+        if let Some(children) = children_by_parent.get(&step_id) {
+            for child_id in children {
+                queue.push_back(*child_id);
+            }
+        }
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
@@ -355,21 +416,21 @@ mod tests {
                     id: a,
                     name: "Cell Seeding".to_string(),
                     details: "details".to_string(),
-                    parent_step_id: None,
+                    parent_step_ids: vec![],
                     default_offset_days: 0,
                 },
                 ProtocolStep {
                     id: b,
                     name: "Drug Treatment".to_string(),
                     details: "details".to_string(),
-                    parent_step_id: Some(a),
+                    parent_step_ids: vec![a],
                     default_offset_days: 3,
                 },
                 ProtocolStep {
                     id: c,
                     name: "Readout".to_string(),
                     details: "details".to_string(),
-                    parent_step_id: Some(b),
+                    parent_step_ids: vec![b],
                     default_offset_days: 2,
                 },
             ],
@@ -397,7 +458,7 @@ mod tests {
     #[test]
     fn rejects_missing_parent() {
         let mut protocol = sample_protocol();
-        protocol.steps[2].parent_step_id = Some(Uuid::new_v4());
+        protocol.steps[2].parent_step_ids = vec![Uuid::new_v4()];
         assert_eq!(
             validate_protocol(&protocol),
             Err(ScheduleError::MissingParent)
@@ -409,9 +470,9 @@ mod tests {
         let mut protocol = sample_protocol();
         let first = protocol.steps[0].id;
         let third = protocol.steps[2].id;
-        protocol.steps[0].parent_step_id = Some(third);
+        protocol.steps[0].parent_step_ids = vec![third];
         protocol.steps[0].default_offset_days = 1;
-        protocol.steps[2].parent_step_id = Some(first);
+        protocol.steps[2].parent_step_ids = vec![first];
 
         assert_eq!(validate_protocol(&protocol), Err(ScheduleError::Cycle));
     }
@@ -451,45 +512,105 @@ mod tests {
     }
 
     #[test]
-    fn move_task_rejects_before_parent() {
+    fn move_task_earlier_does_not_cascade_downstream() {
+        // Moving earlier only shifts the dragged task — downstream tasks keep
+        // their dates because the offset represents real duration.
         let protocol = sample_protocol();
         let start = NaiveDate::from_ymd_opt(2026, 2, 5).unwrap();
         let mut experiment =
             schedule_from_protocol(&protocol, start, "alice".to_string(), 100).unwrap();
 
+        // B starts on Feb 8, C on Feb 10
         let second = experiment.tasks[1].id;
-        let err = move_task_with_constraints(
+        move_task_with_constraints(
             &mut experiment,
             &protocol,
             second,
-            NaiveDate::from_ymd_opt(2026, 2, 4).unwrap(),
-            "invalid".to_string(),
+            NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
+            "shift".to_string(),
             120,
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert_eq!(err, ScheduleError::ViolatesParentConstraint);
+        // A: unchanged at Feb 5
+        assert_eq!(
+            experiment.tasks[0].date,
+            NaiveDate::from_ymd_opt(2026, 2, 5).unwrap()
+        );
+        // B: moved earlier to Feb 5
+        assert_eq!(
+            experiment.tasks[1].date,
+            NaiveDate::from_ymd_opt(2026, 2, 5).unwrap()
+        );
+        // C: stays at Feb 10 (NOT shifted — the 2-day processing time is real)
+        assert_eq!(
+            experiment.tasks[2].date,
+            NaiveDate::from_ymd_opt(2026, 2, 10).unwrap()
+        );
     }
 
     #[test]
-    fn move_task_rejects_after_child() {
+    fn move_task_shifts_only_downstream_forward() {
         let protocol = sample_protocol();
         let start = NaiveDate::from_ymd_opt(2026, 2, 5).unwrap();
         let mut experiment =
             schedule_from_protocol(&protocol, start, "alice".to_string(), 100).unwrap();
 
         let second = experiment.tasks[1].id;
-        let err = move_task_with_constraints(
+        move_task_with_constraints(
             &mut experiment,
             &protocol,
             second,
             NaiveDate::from_ymd_opt(2026, 2, 12).unwrap(),
-            "invalid".to_string(),
+            "shift".to_string(),
             120,
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert_eq!(err, ScheduleError::ViolatesChildConstraint);
+        assert_eq!(
+            experiment.tasks[0].date,
+            NaiveDate::from_ymd_opt(2026, 2, 5).unwrap()
+        );
+        assert_eq!(
+            experiment.tasks[1].date,
+            NaiveDate::from_ymd_opt(2026, 2, 12).unwrap()
+        );
+        assert_eq!(
+            experiment.tasks[2].date,
+            NaiveDate::from_ymd_opt(2026, 2, 14).unwrap()
+        );
+    }
+
+    #[test]
+    fn move_last_task_keeps_prior_steps_fixed() {
+        let protocol = sample_protocol();
+        let start = NaiveDate::from_ymd_opt(2026, 2, 5).unwrap();
+        let mut experiment =
+            schedule_from_protocol(&protocol, start, "alice".to_string(), 100).unwrap();
+
+        let last = experiment.tasks[2].id;
+        move_task_with_constraints(
+            &mut experiment,
+            &protocol,
+            last,
+            NaiveDate::from_ymd_opt(2026, 2, 13).unwrap(),
+            "shift".to_string(),
+            120,
+        )
+        .unwrap();
+
+        assert_eq!(
+            experiment.tasks[0].date,
+            NaiveDate::from_ymd_opt(2026, 2, 5).unwrap()
+        );
+        assert_eq!(
+            experiment.tasks[1].date,
+            NaiveDate::from_ymd_opt(2026, 2, 8).unwrap()
+        );
+        assert_eq!(
+            experiment.tasks[2].date,
+            NaiveDate::from_ymd_opt(2026, 2, 13).unwrap()
+        );
     }
 
     #[test]
@@ -510,10 +631,30 @@ mod tests {
         )
         .unwrap();
 
-        let moved = experiment.tasks.iter().find(|t| t.id == second).unwrap();
-        assert_eq!(moved.date, NaiveDate::from_ymd_opt(2026, 2, 9).unwrap());
-        assert!(moved.deviation.is_some());
-        assert_eq!(moved.deviation.as_ref().unwrap().shifted_by_days, 1);
+        assert!(experiment.tasks[0].deviation.is_none());
+        assert_eq!(experiment.tasks[1].deviation.as_ref().unwrap().shifted_by_days, 1);
+        assert_eq!(experiment.tasks[2].deviation.as_ref().unwrap().shifted_by_days, 1);
+    }
+
+    #[test]
+    fn move_task_before_parent_is_rejected() {
+        let protocol = sample_protocol();
+        let start = NaiveDate::from_ymd_opt(2026, 2, 5).unwrap();
+        let mut experiment =
+            schedule_from_protocol(&protocol, start, "alice".to_string(), 100).unwrap();
+
+        let third = experiment.tasks[2].id;
+        let err = move_task_with_constraints(
+            &mut experiment,
+            &protocol,
+            third,
+            NaiveDate::from_ymd_opt(2026, 2, 7).unwrap(),
+            "shift".to_string(),
+            130,
+        )
+        .unwrap_err();
+
+        assert_eq!(err, ScheduleError::ViolatesParentConstraint);
     }
 
     #[test]
@@ -523,6 +664,7 @@ mod tests {
         let mut experiment =
             schedule_from_protocol(&protocol, start, "alice".to_string(), 100).unwrap();
 
+        // Move B forward (+1): Feb 8 → Feb 9, cascades C to Feb 11
         let second = experiment.tasks[1].id;
         move_task_with_constraints(
             &mut experiment,
@@ -534,6 +676,7 @@ mod tests {
         )
         .unwrap();
 
+        // Move B back (-1): Feb 9 → Feb 8 (only B shifts, C stays at Feb 11)
         move_task_with_constraints(
             &mut experiment,
             &protocol,
@@ -544,8 +687,16 @@ mod tests {
         )
         .unwrap();
 
-        let moved = experiment.tasks.iter().find(|t| t.id == second).unwrap();
-        assert!(moved.deviation.is_none());
+        // A: no deviation (never moved)
+        assert!(experiment.tasks[0].deviation.is_none());
+        // B: back to planned date → deviation cleared
+        assert!(experiment.tasks[1].deviation.is_none());
+        // C: still shifted from planned Feb 10 to Feb 11 → deviation remains
+        assert!(experiment.tasks[2].deviation.is_some());
+        assert_eq!(
+            experiment.tasks[2].deviation.as_ref().unwrap().shifted_by_days,
+            1
+        );
     }
 
     #[test]
@@ -559,16 +710,11 @@ mod tests {
         let second = experiment.tasks[1].id;
         let first_date = experiment.tasks[0].date;
 
-        // put second task on same day as first for ordering test
-        move_task_with_constraints(
-            &mut experiment,
-            &protocol,
-            second,
-            first_date,
-            "same day".to_string(),
-            111,
-        )
-        .unwrap();
+        // Put second task on same day as first for ordering test.
+        if let Some(t) = experiment.tasks.iter_mut().find(|t| t.id == second) {
+            t.date = first_date;
+            t.day_priority = 1;
+        }
 
         reorder_task_for_day(&mut experiment, second, -10, 112).unwrap();
 
@@ -628,15 +774,10 @@ mod tests {
         let t1 = experiment.tasks[1].id;
         let first_date = experiment.tasks[0].date;
 
-        move_task_with_constraints(
-            &mut experiment,
-            &protocol,
-            t1,
-            first_date,
-            "same day".to_string(),
-            110,
-        )
-        .unwrap();
+        if let Some(t) = experiment.tasks.iter_mut().find(|t| t.id == t1) {
+            t.date = first_date;
+            t.day_priority = 1;
+        }
 
         reorder_task_for_day(&mut experiment, t1, -1, 111).unwrap();
 
@@ -676,5 +817,174 @@ mod tests {
 
         let err = reorder_task_for_day(&mut experiment, Uuid::new_v4(), 1, 101).unwrap_err();
         assert_eq!(err, ScheduleError::TaskNotFound);
+    }
+
+    #[test]
+    fn schedules_multi_parent_step_from_latest_parent() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let c = Uuid::new_v4();
+        let protocol = Protocol {
+            id: Uuid::new_v4(),
+            name: "ForkJoin".to_string(),
+            description: "multi parent".to_string(),
+            steps: vec![
+                ProtocolStep {
+                    id: a,
+                    name: "A".to_string(),
+                    details: "".to_string(),
+                    parent_step_ids: vec![],
+                    default_offset_days: 0,
+                },
+                ProtocolStep {
+                    id: b,
+                    name: "B".to_string(),
+                    details: "".to_string(),
+                    parent_step_ids: vec![a],
+                    default_offset_days: 3,
+                },
+                ProtocolStep {
+                    id: c,
+                    name: "C".to_string(),
+                    details: "".to_string(),
+                    parent_step_ids: vec![a, b],
+                    default_offset_days: 2,
+                },
+            ],
+            created_at: 1,
+            updated_at: 1,
+        };
+
+        let start = NaiveDate::from_ymd_opt(2026, 2, 5).unwrap();
+        let experiment =
+            schedule_from_protocol(&protocol, start, "alice".to_string(), 100).unwrap();
+        let by_step: std::collections::HashMap<Uuid, NaiveDate> =
+            experiment.tasks.iter().map(|t| (t.step_id, t.date)).collect();
+
+        assert_eq!(by_step[&a], NaiveDate::from_ymd_opt(2026, 2, 5).unwrap());
+        assert_eq!(by_step[&b], NaiveDate::from_ymd_opt(2026, 2, 8).unwrap());
+        assert_eq!(by_step[&c], NaiveDate::from_ymd_opt(2026, 2, 10).unwrap());
+    }
+
+    #[test]
+    fn move_task_shifts_multi_parent_downstream_by_delta() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let c = Uuid::new_v4();
+        let protocol = Protocol {
+            id: Uuid::new_v4(),
+            name: "ForkJoin".to_string(),
+            description: "multi parent".to_string(),
+            steps: vec![
+                ProtocolStep {
+                    id: a,
+                    name: "A".to_string(),
+                    details: "".to_string(),
+                    parent_step_ids: vec![],
+                    default_offset_days: 0,
+                },
+                ProtocolStep {
+                    id: b,
+                    name: "B".to_string(),
+                    details: "".to_string(),
+                    parent_step_ids: vec![a],
+                    default_offset_days: 3,
+                },
+                ProtocolStep {
+                    id: c,
+                    name: "C".to_string(),
+                    details: "".to_string(),
+                    parent_step_ids: vec![a, b],
+                    default_offset_days: 2,
+                },
+            ],
+            created_at: 1,
+            updated_at: 1,
+        };
+
+        let start = NaiveDate::from_ymd_opt(2026, 2, 5).unwrap();
+        let mut experiment =
+            schedule_from_protocol(&protocol, start, "alice".to_string(), 100).unwrap();
+        let b_task_id = experiment
+            .tasks
+            .iter()
+            .find(|t| t.step_id == b)
+            .map(|t| t.id)
+            .unwrap();
+
+        move_task_with_constraints(
+            &mut experiment,
+            &protocol,
+            b_task_id,
+            NaiveDate::from_ymd_opt(2026, 2, 10).unwrap(),
+            "shift".to_string(),
+            120,
+        )
+        .unwrap();
+
+        let by_step: std::collections::HashMap<Uuid, NaiveDate> =
+            experiment.tasks.iter().map(|t| (t.step_id, t.date)).collect();
+        assert_eq!(by_step[&a], NaiveDate::from_ymd_opt(2026, 2, 5).unwrap());
+        assert_eq!(by_step[&b], NaiveDate::from_ymd_opt(2026, 2, 10).unwrap());
+        assert_eq!(by_step[&c], NaiveDate::from_ymd_opt(2026, 2, 12).unwrap());
+    }
+
+    #[test]
+    fn move_multi_parent_child_before_other_parent_is_rejected() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let c = Uuid::new_v4();
+        let protocol = Protocol {
+            id: Uuid::new_v4(),
+            name: "ForkJoin".to_string(),
+            description: "multi parent".to_string(),
+            steps: vec![
+                ProtocolStep {
+                    id: a,
+                    name: "A".to_string(),
+                    details: "".to_string(),
+                    parent_step_ids: vec![],
+                    default_offset_days: 0,
+                },
+                ProtocolStep {
+                    id: b,
+                    name: "B".to_string(),
+                    details: "".to_string(),
+                    parent_step_ids: vec![a],
+                    default_offset_days: 3,
+                },
+                ProtocolStep {
+                    id: c,
+                    name: "C".to_string(),
+                    details: "".to_string(),
+                    parent_step_ids: vec![a, b],
+                    default_offset_days: 2,
+                },
+            ],
+            created_at: 1,
+            updated_at: 1,
+        };
+
+        let start = NaiveDate::from_ymd_opt(2026, 2, 5).unwrap();
+        let mut experiment =
+            schedule_from_protocol(&protocol, start, "alice".to_string(), 100).unwrap();
+        let b_task_id = experiment
+            .tasks
+            .iter()
+            .find(|t| t.step_id == b)
+            .map(|t| t.id)
+            .unwrap();
+
+        let err = move_task_with_constraints(
+            &mut experiment,
+            &protocol,
+            b_task_id,
+            NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+            "shift".to_string(),
+            120,
+        )
+        .unwrap_err();
+
+        assert_eq!(err, ScheduleError::ViolatesParentConstraint);
     }
 }

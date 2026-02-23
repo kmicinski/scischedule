@@ -23,7 +23,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/api/protocols", get(list_protocols).post(create_protocol))
-        .route("/api/protocols/:id", get(get_protocol))
+        .route("/api/protocols/:id", get(get_protocol).patch(update_protocol))
         .route(
             "/api/experiments",
             get(list_experiments).post(plan_experiment),
@@ -61,6 +61,14 @@ async fn get_protocol(
     Path(id): Path<Uuid>,
 ) -> Result<Json<crate::domain::Protocol>, ApiError> {
     Ok(Json(service.get_protocol(id)?))
+}
+
+async fn update_protocol(
+    State(service): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<CreateProtocolRequest>,
+) -> Result<Json<crate::domain::Protocol>, ApiError> {
+    Ok(Json(service.update_protocol(id, req)?))
 }
 
 async fn plan_experiment(
@@ -145,6 +153,7 @@ impl IntoResponse for ApiError {
             ServiceError::NotFound => StatusCode::NOT_FOUND,
             ServiceError::Repo(crate::repo::RepoError::NotFound) => StatusCode::NOT_FOUND,
             ServiceError::Schedule(_) => StatusCode::BAD_REQUEST,
+            ServiceError::InvalidProtocolEdit(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
 

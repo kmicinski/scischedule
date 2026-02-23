@@ -20,6 +20,8 @@ pub enum ServiceError {
     Repo(#[from] RepoError),
     #[error("schedule error: {0}")]
     Schedule(#[from] crate::domain::ScheduleError),
+    #[error("invalid protocol edit: {0}")]
+    InvalidProtocolEdit(String),
     #[error("not found")]
     NotFound,
 }
@@ -41,6 +43,40 @@ impl<R: Repository> AppService<R> {
             description: req.description,
             steps: map_steps(req.steps),
             created_at: now,
+            updated_at: now,
+        };
+
+        validate_protocol(&protocol)?;
+        self.repo.upsert_protocol(&protocol)?;
+        Ok(protocol)
+    }
+
+    pub fn update_protocol(
+        &self,
+        id: ProtocolId,
+        req: CreateProtocolRequest,
+    ) -> Result<Protocol, ServiceError> {
+        let existing = self.repo.get_protocol(id)?;
+        let now = Utc::now().timestamp();
+        let has_experiments = self
+            .repo
+            .list_experiments()?
+            .iter()
+            .any(|e| e.protocol_id == id);
+
+        if has_experiments && req.steps.len() != existing.steps.len() {
+            return Err(ServiceError::InvalidProtocolEdit(
+                "cannot add or remove protocol steps after experiments are created".to_string(),
+            ));
+        }
+
+        let existing_ids: Vec<Uuid> = existing.steps.iter().map(|s| s.id).collect();
+        let protocol = Protocol {
+            id: existing.id,
+            name: req.name,
+            description: req.description,
+            steps: map_steps_with_existing_ids(req.steps, &existing_ids),
+            created_at: existing.created_at,
             updated_at: now,
         };
 
@@ -127,7 +163,16 @@ impl<R: Repository> AppService<R> {
 }
 
 fn map_steps(steps: Vec<CreateProtocolStepRequest>) -> Vec<ProtocolStep> {
-    let generated_ids: Vec<Uuid> = (0..steps.len()).map(|_| Uuid::new_v4()).collect();
+    map_steps_with_existing_ids(steps, &[])
+}
+
+fn map_steps_with_existing_ids(
+    steps: Vec<CreateProtocolStepRequest>,
+    existing_ids: &[Uuid],
+) -> Vec<ProtocolStep> {
+    let generated_ids: Vec<Uuid> = (0..steps.len())
+        .map(|idx| existing_ids.get(idx).copied().unwrap_or_else(Uuid::new_v4))
+        .collect();
 
     steps
         .into_iter()
@@ -136,9 +181,17 @@ fn map_steps(steps: Vec<CreateProtocolStepRequest>) -> Vec<ProtocolStep> {
             id: generated_ids[idx],
             name: s.name,
             details: s.details,
-            parent_step_id: s
-                .parent_step_index
-                .and_then(|p| generated_ids.get(p).copied()),
+            parent_step_ids: s
+                .parent_step_indexes
+                .into_iter()
+                .filter_map(|p| generated_ids.get(p).copied())
+                .filter(|parent_id| *parent_id != generated_ids[idx])
+                .fold(Vec::new(), |mut out, parent_id| {
+                    if !out.contains(&parent_id) {
+                        out.push(parent_id);
+                    }
+                    out
+                }),
             default_offset_days: s.default_offset_days,
         })
         .collect()
@@ -218,13 +271,13 @@ mod tests {
                 CreateProtocolStepRequest {
                     name: "Step 1".into(),
                     details: "a".into(),
-                    parent_step_index: None,
+                    parent_step_indexes: vec![],
                     default_offset_days: 0,
                 },
                 CreateProtocolStepRequest {
                     name: "Step 2".into(),
                     details: "b".into(),
-                    parent_step_index: None,
+                    parent_step_indexes: vec![],
                     default_offset_days: 3,
                 },
             ],
@@ -241,6 +294,91 @@ mod tests {
 
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, p.id);
+    }
+
+    #[test]
+    fn update_protocol_updates_existing_fields() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let p = svc.create_protocol(sample_create_protocol()).unwrap();
+        let original_ids: Vec<Uuid> = p.steps.iter().map(|s| s.id).collect();
+
+        let updated = svc
+            .update_protocol(
+                p.id,
+                CreateProtocolRequest {
+                    name: "Protocol A Edited".into(),
+                    description: "Edited".into(),
+                    steps: vec![
+                        CreateProtocolStepRequest {
+                            name: "Step 1 edited".into(),
+                            details: "aa".into(),
+                            parent_step_indexes: vec![],
+                            default_offset_days: 0,
+                        },
+                        CreateProtocolStepRequest {
+                            name: "Step 2 edited".into(),
+                            details: "bb".into(),
+                            parent_step_indexes: vec![0],
+                            default_offset_days: 4,
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+
+        assert_eq!(updated.name, "Protocol A Edited");
+        assert_eq!(updated.description, "Edited");
+        assert_eq!(updated.steps[0].id, original_ids[0]);
+        assert_eq!(updated.steps[1].id, original_ids[1]);
+        assert_eq!(updated.steps[1].parent_step_ids, vec![original_ids[0]]);
+        assert_eq!(updated.steps[1].default_offset_days, 4);
+    }
+
+    #[test]
+    fn update_protocol_rejects_step_count_change_when_experiment_exists() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let p = svc.create_protocol(sample_create_protocol()).unwrap();
+
+        svc.plan_experiment(PlanExperimentRequest {
+            protocol_id: p.id,
+            start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
+            created_by: "alice".into(),
+        })
+        .unwrap();
+
+        let err = svc
+            .update_protocol(
+                p.id,
+                CreateProtocolRequest {
+                    name: "Protocol A Edited".into(),
+                    description: "Edited".into(),
+                    steps: vec![
+                        CreateProtocolStepRequest {
+                            name: "Step 1".into(),
+                            details: "a".into(),
+                            parent_step_indexes: vec![],
+                            default_offset_days: 0,
+                        },
+                        CreateProtocolStepRequest {
+                            name: "Step 2".into(),
+                            details: "b".into(),
+                            parent_step_indexes: vec![0],
+                            default_offset_days: 3,
+                        },
+                        CreateProtocolStepRequest {
+                            name: "Step 3".into(),
+                            details: "c".into(),
+                            parent_step_indexes: vec![1],
+                            default_offset_days: 2,
+                        },
+                    ],
+                },
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, ServiceError::InvalidProtocolEdit(_)));
     }
 
     #[test]
@@ -275,13 +413,13 @@ mod tests {
                 CreateProtocolStepRequest {
                     name: "Step 1".into(),
                     details: "a".into(),
-                    parent_step_index: None,
+                    parent_step_indexes: vec![],
                     default_offset_days: 0,
                 },
                 CreateProtocolStepRequest {
                     name: "Step 2".into(),
                     details: "b".into(),
-                    parent_step_index: Some(0),
+                    parent_step_indexes: vec![0],
                     default_offset_days: 3,
                 },
             ],

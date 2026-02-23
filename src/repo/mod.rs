@@ -140,7 +140,7 @@ mod tests {
                 id: Uuid::new_v4(),
                 name: "S".into(),
                 details: "x".into(),
-                parent_step_id: None,
+                parent_step_ids: vec![],
                 default_offset_days: 0,
             }],
             created_at: 1,

@@ -75,6 +75,65 @@ async fn create_protocol_then_list_protocols() {
 }
 
 #[tokio::test]
+async fn update_protocol_via_patch() {
+    let app = app();
+
+    let create_body = serde_json::json!({
+      "name": "Protocol Edit",
+      "description": "Initial",
+      "steps": [
+        {"name":"Seed", "details":"x", "parent_step_index": null, "default_offset_days": 0},
+        {"name":"Treat", "details":"y", "parent_step_index": 0, "default_offset_days": 3}
+      ]
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/protocols")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(create.status(), StatusCode::OK);
+    let create_bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let protocol: serde_json::Value = serde_json::from_slice(&create_bytes).unwrap();
+
+    let update_body = serde_json::json!({
+      "name": "Protocol Edit Updated",
+      "description": "Changed",
+      "steps": [
+        {"name":"Seed updated", "details":"x2", "parent_step_index": null, "default_offset_days": 1},
+        {"name":"Treat updated", "details":"y2", "parent_step_index": 0, "default_offset_days": 4}
+      ]
+    });
+
+    let update = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/protocols/{}", protocol["id"].as_str().unwrap()))
+                .header("content-type", "application/json")
+                .body(Body::from(update_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(update.status(), StatusCode::OK);
+    let update_bytes = update.into_body().collect().await.unwrap().to_bytes();
+    let updated: serde_json::Value = serde_json::from_slice(&update_bytes).unwrap();
+    assert_eq!(updated["name"], "Protocol Edit Updated");
+    assert_eq!(updated["steps"][1]["default_offset_days"], 4);
+}
+
+#[tokio::test]
 async fn plan_lock_and_move_flow() {
     let app = app();
 
@@ -258,6 +317,82 @@ async fn move_rejects_invalid_dates() {
       "task_id": uuid::Uuid::new_v4(),
       "new_date": "2026-02-06",
       "reason": "bad"
+    });
+
+    let moved = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!(
+                    "/api/experiments/{}/tasks/move",
+                    exp["id"].as_str().unwrap()
+                ))
+                .header("content-type", "application/json")
+                .body(Body::from(move_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(moved.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn move_rejects_skipping_prerequisites() {
+    let app = app();
+
+    let create_body = serde_json::json!({
+      "name": "Protocol D",
+      "description": "D desc",
+      "steps": [
+        {"name":"Step1", "details":"x", "parent_step_index": null, "default_offset_days": 0},
+        {"name":"Step2", "details":"y", "parent_step_index": 0, "default_offset_days": 3},
+        {"name":"Step3", "details":"z", "parent_step_index": 1, "default_offset_days": 2}
+      ]
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/protocols")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let create_bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let protocol: serde_json::Value = serde_json::from_slice(&create_bytes).unwrap();
+
+    let plan_body = serde_json::json!({
+      "protocol_id": protocol["id"],
+      "start_date": "2026-02-05",
+      "created_by": "alice"
+    });
+
+    let plan = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/experiments")
+                .header("content-type", "application/json")
+                .body(Body::from(plan_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let plan_bytes = plan.into_body().collect().await.unwrap().to_bytes();
+    let exp: serde_json::Value = serde_json::from_slice(&plan_bytes).unwrap();
+
+    let move_body = serde_json::json!({
+      "task_id": exp["tasks"][2]["id"],
+      "new_date": "2026-02-07",
+      "reason": "bad order"
     });
 
     let moved = app

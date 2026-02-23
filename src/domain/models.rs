@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use serde::{Deserialize, Serialize};
+use serde::{de::Deserializer, Deserialize, Serialize};
 use uuid::Uuid;
 
 pub type ProtocolId = Uuid;
@@ -23,7 +23,12 @@ pub struct ProtocolStep {
     pub id: StepId,
     pub name: String,
     pub details: String,
-    pub parent_step_id: Option<StepId>,
+    #[serde(
+        default,
+        alias = "parent_step_id",
+        deserialize_with = "deserialize_parent_step_ids"
+    )]
+    pub parent_step_ids: Vec<StepId>,
     pub default_offset_days: i32,
 }
 
@@ -93,8 +98,12 @@ pub struct WeekView {
 pub struct CreateProtocolStepRequest {
     pub name: String,
     pub details: String,
-    #[serde(default)]
-    pub parent_step_index: Option<usize>,
+    #[serde(
+        default,
+        alias = "parent_step_index",
+        deserialize_with = "deserialize_parent_step_indexes"
+    )]
+    pub parent_step_indexes: Vec<usize>,
     pub default_offset_days: i32,
 }
 
@@ -123,4 +132,33 @@ pub struct MoveTaskRequest {
 pub struct ReorderTaskRequest {
     pub task_id: TaskId,
     pub new_priority: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum MaybeMany<T> {
+    One(T),
+    Many(Vec<T>),
+}
+
+fn deserialize_parent_step_ids<'de, D>(deserializer: D) -> Result<Vec<StepId>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<MaybeMany<StepId>>::deserialize(deserializer)? {
+        None => Ok(Vec::new()),
+        Some(MaybeMany::One(id)) => Ok(vec![id]),
+        Some(MaybeMany::Many(ids)) => Ok(ids),
+    }
+}
+
+fn deserialize_parent_step_indexes<'de, D>(deserializer: D) -> Result<Vec<usize>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<MaybeMany<usize>>::deserialize(deserializer)? {
+        None => Ok(Vec::new()),
+        Some(MaybeMany::One(idx)) => Ok(vec![idx]),
+        Some(MaybeMany::Many(indexes)) => Ok(indexes),
+    }
 }
