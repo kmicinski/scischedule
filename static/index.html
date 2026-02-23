@@ -20,15 +20,27 @@
           <h2>Recent Protocols</h2>
           <ul id="protocol-list" class="protocol-list"></ul>
         </section>
+
+        <section>
+          <h2>Experiments</h2>
+          <ul id="experiment-list" class="experiment-list"></ul>
+        </section>
       </aside>
 
       <main class="main-content">
         <header class="topbar">
-          <div class="tabs">
-            <button class="tab active" data-view="month">Month</button>
-            <button class="tab" data-view="week">Week</button>
+          <div class="topbar-left">
+            <label class="scientist-profile" title="Default scientist">
+              <span class="scientist-icon" aria-hidden="true">👤</span>
+              <input id="scientist-name" class="scientist-name-input" value="Katherine" />
+            </label>
+            <div class="tabs">
+              <button class="tab active" data-view="month">Month</button>
+              <button class="tab" data-view="week">Week</button>
+            </div>
           </div>
           <div class="actions">
+            <button id="new-protocol-btn-top" class="btn primary">New Protocol</button>
             <button id="lock-selected-btn" class="btn" disabled>Lock Selected Draft</button>
             <button id="today-btn" class="btn">Today</button>
           </div>
@@ -42,30 +54,15 @@
               Drag across the calendar to preview all tasks before creating the draft.
             </p>
           </div>
-          <label>
-            Scientist
-            <input id="placement-scientist" value="scientist" />
-          </label>
+          <div class="placement-candidate-wrap">
+            <span class="placement-label">Candidate</span>
+            <div id="placement-candidate" class="placement-candidate" draggable="true"></div>
+          </div>
           <div class="placement-actions">
             <button id="placement-create" class="btn primary">Create Draft</button>
             <button id="placement-cancel" class="btn">Cancel</button>
           </div>
         </section>
-        <section id="move-panel" class="placement-panel hidden">
-          <div>
-            <strong>Confirm Deviation</strong>
-            <p id="move-subtitle">Review the move and add a reason for later audit.</p>
-          </div>
-          <label>
-            Reason
-            <input id="move-reason" placeholder="Why is this step being moved?" />
-          </label>
-          <div class="placement-actions">
-            <button id="move-confirm" class="btn primary">Confirm Move</button>
-            <button id="move-cancel" class="btn">Cancel</button>
-          </div>
-        </section>
-
         <section id="month-view" class="view active">
           <div class="view-header">
             <button id="month-prev" class="btn">Prev</button>
@@ -84,37 +81,55 @@
           </div>
           <div id="week-grid" class="week-grid"></div>
         </section>
+
+        <div id="adjust-controls" class="adjust-controls hidden">
+          <div id="move-subtitle" class="adjust-subtitle"></div>
+          <input id="move-reason" class="adjust-reason" placeholder="Optional note about this move" />
+          <div class="adjust-actions">
+            <button id="move-confirm" class="btn primary">Confirm Move</button>
+            <button id="move-cancel" class="btn">Cancel</button>
+          </div>
+        </div>
       </main>
     </div>
 
     <dialog id="protocol-dialog">
-      <form id="protocol-form" class="dialog-form">
-        <h3>Create Protocol</h3>
-        <label>Name <input name="name" required /></label>
-        <label>Description <textarea name="description" rows="2"></textarea></label>
+      <form id="protocol-form" class="dialog-form protocol-dialog-form">
+        <div class="dialog-header">
+          <h3 id="protocol-dialog-title">Create Protocol</h3>
+        </div>
 
-        <div id="steps-container"></div>
-        <button type="button" id="add-step" class="btn">Add Step</button>
+        <div class="protocol-meta">
+          <label class="field">
+            <span class="field-label">Protocol Name</span>
+            <input name="name" required placeholder="e.g., Cell Culture Prep" />
+          </label>
+          <label class="field">
+            <span class="field-label">Description</span>
+            <textarea name="description" rows="2" placeholder="Brief description of this protocol"></textarea>
+          </label>
+        </div>
+
+        <div class="steps-section">
+          <div class="steps-section-header">
+            <span class="steps-section-title">Steps</span>
+            <button type="button" id="add-step" class="btn btn-sm">+ Add Step</button>
+          </div>
+          <div id="steps-container" class="steps-container"></div>
+        </div>
+
+        <div id="dag-preview" class="dag-preview">
+          <span class="dag-preview-title">Dependency Graph</span>
+          <div id="dag-canvas" class="dag-canvas"></div>
+        </div>
 
         <div class="dialog-actions">
           <button type="button" id="cancel-protocol" class="btn">Cancel</button>
-          <button type="submit" class="btn primary">Save Protocol</button>
+          <button id="save-protocol-btn" type="submit" class="btn primary">Save Protocol</button>
         </div>
       </form>
     </dialog>
 
-    <template id="step-template">
-      <div class="step-card">
-        <label>Step Name <input class="step-name" required /></label>
-        <label>Details <input class="step-details" /></label>
-        <label>Depends On
-          <select class="step-parent">
-            <option value="">(root)</option>
-          </select>
-        </label>
-        <label>Offset Days <input class="step-offset" type="number" value="0" /></label>
-      </div>
-    </template>
 
     <script src="/static/app.js" defer></script>
   </body>
