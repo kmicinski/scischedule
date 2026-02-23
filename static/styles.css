@@ -972,59 +972,97 @@ body.drag-task-active .task-row {
   opacity: 0.55;
 }
 
-/* ── Adjust controls (pending move panel) ───────────────────────── */
+/* ── Move popover (floating confirmation) ──────────────────────── */
 
-.adjust-controls {
-  margin: 0 1rem 0.5rem;
-  display: grid;
-  gap: 0.4rem;
-  padding: 0.6rem 0.75rem;
+.move-popover {
+  position: fixed;
+  z-index: 9999;
+  min-width: 280px;
+  max-width: 360px;
+  padding: 0.75rem 0.85rem;
   border: 1px solid #a8d6ce;
   border-radius: var(--radius-lg);
-  background: rgba(244, 255, 252, 0.97);
-  backdrop-filter: blur(4px);
-  box-shadow: 0 -4px 16px rgba(12, 44, 44, 0.06);
+  background: rgba(244, 255, 252, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px rgba(12, 44, 44, 0.14), 0 2px 8px rgba(12, 44, 44, 0.08);
+  display: grid;
+  gap: 0.35rem;
+  animation: popover-enter 150ms ease-out;
 }
 
-.adjust-controls.hidden {
-  display: none;
+@keyframes popover-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
-.adjust-subtitle {
-  font-size: 0.8rem;
-  color: #3a5f5b;
-  line-height: 1.4;
-}
-
-.adjust-subtitle strong {
+.move-popover-header {
+  font-weight: 700;
+  font-size: 0.82rem;
   color: var(--text);
+  line-height: 1.3;
 }
 
-.adjust-subtitle kbd {
-  display: inline-block;
-  padding: 0.05rem 0.3rem;
-  border: 1px solid #bdd4ce;
-  border-radius: 4px;
-  background: #f0f6f4;
+.move-popover-delta {
+  font-size: 0.75rem;
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+.move-popover-downstream {
   font-size: 0.72rem;
-  font-family: inherit;
-}
-
-.adjust-subtitle.error {
-  color: var(--danger);
+  color: var(--accent);
   font-weight: 600;
 }
 
-.adjust-reason {
+.move-popover-reason {
   border: 1px solid #b8d8d1;
   border-radius: var(--radius);
   padding: 0.35rem 0.45rem;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
+  width: 100%;
 }
 
-.adjust-actions {
+.move-popover-reason:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(12, 95, 90, 0.12);
+}
+
+.move-popover-actions {
   display: flex;
-  gap: 0.4rem;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  margin-top: 0.1rem;
+}
+
+.move-popover-hint {
+  font-size: 0.62rem;
+  color: var(--muted);
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
+.move-popover-hint kbd {
+  display: inline-block;
+  padding: 0.02rem 0.25rem;
+  border: 1px solid #bdd4ce;
+  border-radius: 3px;
+  background: #f0f6f4;
+  font-size: 0.6rem;
+  font-family: inherit;
+}
+
+.move-popover-error {
+  font-size: 0.75rem;
+  color: var(--danger);
+  font-weight: 600;
 }
 
 /* ── Dialog ─────────────────────────────────────────────────────── */

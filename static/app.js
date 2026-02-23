@@ -57,10 +57,6 @@ const placementPanel = $("#placement-panel");
 const placementTitle = $("#placement-title");
 const placementCandidate = $("#placement-candidate");
 const scientistNameInput = $("#scientist-name");
-const adjustControls = $("#adjust-controls");
-const moveSubtitle = $("#move-subtitle");
-const moveReason = $("#move-reason");
-const moveConfirmBtn = $("#move-confirm");
 const appShell = document.querySelector(".app-shell");
 
 init();
@@ -121,14 +117,6 @@ function bindUi() {
   $("#placement-cancel").addEventListener("click", () => {
     clearPlacement();
     drawMonthGrid();
-  });
-
-  $("#move-confirm").addEventListener("click", async () => {
-    await commitPendingMove();
-  });
-
-  $("#move-cancel").addEventListener("click", () => {
-    clearPendingMove();
   });
 
   document.addEventListener("keydown", async (e) => {
@@ -525,7 +513,6 @@ async function refreshAll() {
   renderExperiments();
   updateLockButton();
   updatePlacementPanel();
-  updateMovePanel();
   await renderViews();
 }
 
@@ -735,6 +722,11 @@ function drawMonthGrid() {
         } else {
           e.preventDefault();
           div.classList.add("drag-over");
+          previewDragMove(
+            resolveTaskExperimentId(drag.taskId, drag.experimentId),
+            drag.taskId,
+            cell.date,
+          );
         }
       } else {
         div.classList.remove("drag-over");
@@ -757,11 +749,19 @@ function drawMonthGrid() {
         beginPlacement(drag.protocolId || state.placement?.protocolId, cell.date);
         drawMonthGrid();
       } else if (drag?.kind === "task" && drag.taskId) {
-        stageMove(
-          resolveTaskExperimentId(drag.taskId, drag.experimentId),
-          drag.taskId,
-          cell.date,
-        );
+        if (state.pendingMove?.preview && state.pendingMove.toDate === cell.date) {
+          // Promote existing preview to staged move
+          delete state.pendingMove.preview;
+          showMovePopover(cell.date);
+          drawMonthGrid();
+          renderWeek({ skipFetch: true });
+        } else {
+          stageMove(
+            resolveTaskExperimentId(drag.taskId, drag.experimentId),
+            drag.taskId,
+            cell.date,
+          );
+        }
       }
       clearActiveDrag();
     });
@@ -892,7 +892,7 @@ function drawTaskRows(cellEl, cell, previews) {
         // Clear any existing pending move when starting a new drag
         if (state.pendingMove) {
           state.pendingMove = null;
-          updateMovePanel();
+          dismissMovePopover();
         }
         div.classList.add("dragging");
         document.body.classList.add("drag-task-active");
@@ -910,6 +910,10 @@ function drawTaskRows(cellEl, cell, previews) {
         monthGrid
           .querySelectorAll(".month-cell.adjust-invalid")
           .forEach((c) => c.classList.remove("adjust-invalid"));
+        if (state.pendingMove?.preview) {
+          state.pendingMove = null;
+          drawMonthGrid();
+        }
         clearActiveDrag();
       });
 
@@ -1093,7 +1097,7 @@ async function renderWeek(options = {}) {
     if (wd.date === todayISO) wrap.classList.add("today");
     if (dow === 0 || dow === 6) wrap.classList.add("weekend");
 
-    // Dragover: lightweight, no stageMove
+    // Dragover: lightweight preview
     wrap.addEventListener("dragover", (e) => {
       const drag = readDragPayload(e.dataTransfer);
       if (drag?.kind === "task" && drag.taskId) {
@@ -1103,6 +1107,11 @@ async function renderWeek(options = {}) {
         } else {
           e.preventDefault();
           wrap.classList.add("drag-over");
+          previewDragMove(
+            resolveTaskExperimentId(drag.taskId, drag.experimentId),
+            drag.taskId,
+            wd.date,
+          );
         }
       }
     });
@@ -1111,17 +1120,24 @@ async function renderWeek(options = {}) {
       wrap.classList.remove("drag-over");
     });
 
-    // Drop: stage move here
+    // Drop: promote preview or stage move
     wrap.addEventListener("drop", (e) => {
       e.preventDefault();
       wrap.classList.remove("drag-over");
       const drag = readDragPayload(e.dataTransfer);
       if (drag?.kind === "task" && drag.taskId) {
-        stageMove(
-          resolveTaskExperimentId(drag.taskId, drag.experimentId),
-          drag.taskId,
-          wd.date,
-        );
+        if (state.pendingMove?.preview && state.pendingMove.toDate === wd.date) {
+          delete state.pendingMove.preview;
+          showMovePopover(wd.date);
+          drawMonthGrid();
+          renderWeek({ skipFetch: true });
+        } else {
+          stageMove(
+            resolveTaskExperimentId(drag.taskId, drag.experimentId),
+            drag.taskId,
+            wd.date,
+          );
+        }
       }
       clearActiveDrag();
     });
@@ -1182,7 +1198,7 @@ function buildWeekTaskCard(task, index) {
   card.addEventListener("dragstart", (e) => {
     if (state.pendingMove) {
       state.pendingMove = null;
-      updateMovePanel();
+      dismissMovePopover();
     }
     setDragPayload(e, {
       kind: "task",
@@ -1192,6 +1208,10 @@ function buildWeekTaskCard(task, index) {
   });
 
   card.addEventListener("dragend", () => {
+    if (state.pendingMove?.preview) {
+      state.pendingMove = null;
+      drawMonthGrid();
+    }
     clearActiveDrag();
   });
 
@@ -1404,8 +1424,7 @@ function stageMove(experimentId, taskId, toDate) {
     shiftedStepIds: Array.from(shiftedStepIds),
     label: `${ctx.protocolName}: ${ctx.task.step_name}`,
   };
-  moveReason.value = ctx.task.deviation?.reason || "";
-  updateMovePanel();
+  showMovePopover(toDate);
 
   // Single repaint
   drawMonthGrid();
@@ -1415,29 +1434,15 @@ function stageMove(experimentId, taskId, toDate) {
 
 function clearPendingMove() {
   state.pendingMove = null;
-  updateMovePanel();
+  dismissMovePopover();
   drawMonthGrid();
   renderWeek({ skipFetch: true });
 }
 
-function updateMovePanel() {
-  if (!adjustControls) return;
-  if (!state.pendingMove) {
-    adjustControls.classList.add("hidden");
-    return;
-  }
-
-  adjustControls.classList.remove("hidden");
-  const deltaLabel = formatSignedDays(state.pendingMove.deltaDays);
-  const shiftCount = state.pendingMove.shiftedStepIds.length;
-  moveSubtitle.innerHTML = `<strong>${escapeHtml(state.pendingMove.label)}</strong> &rarr; ${state.pendingMove.toDate} (${deltaLabel}). ${shiftCount > 1 ? `${shiftCount - 1} downstream task${shiftCount > 2 ? "s" : ""} will also shift.` : ""} <kbd>Enter</kbd> to confirm, <kbd>Esc</kbd> to cancel.`;
-  moveSubtitle.classList.remove("error");
-  moveConfirmBtn.disabled = !state.pendingMove;
-}
-
 async function commitPendingMove() {
   if (!state.pendingMove) return;
-  const reason = (moveReason.value || "Manual deviation").trim();
+  const reasonInput = document.getElementById("move-popover-reason");
+  const reason = (reasonInput?.value || "Manual deviation").trim();
 
   const res = await api(`/api/experiments/${state.pendingMove.experimentId}/tasks/move`, {
     method: "PATCH",
@@ -1449,20 +1454,189 @@ async function commitPendingMove() {
   });
 
   if (res.error) {
-    setAdjustHint(res.error, true);
+    // Show error inline in the popover
+    const popover = document.getElementById("move-popover");
+    if (popover) {
+      let errEl = popover.querySelector(".move-popover-error");
+      if (!errEl) {
+        errEl = document.createElement("div");
+        errEl.className = "move-popover-error";
+        popover.querySelector(".move-popover-actions")?.before(errEl);
+      }
+      errEl.textContent = res.error;
+    }
     return;
   }
 
   showStatus("Move saved.");
   state.pendingMove = null;
-  updateMovePanel();
+  dismissMovePopover();
   await refreshAll();
 }
 
-function setAdjustHint(message, isError = false) {
-  if (!moveSubtitle) return;
-  moveSubtitle.textContent = message || "";
-  moveSubtitle.classList.toggle("error", Boolean(isError));
+/* ── Live drag preview ──────────────────────────────────────────── */
+
+function previewDragMove(experimentId, taskId, cellDate) {
+  const ctx = state.taskContext.get(taskId);
+  if (!ctx) return;
+  const resolvedExperimentId = resolveTaskExperimentId(taskId, experimentId);
+  if (!resolvedExperimentId) return;
+
+  // Same cell as current task position — clear any preview
+  if (ctx.task.date === cellDate) {
+    if (state.pendingMove?.preview) {
+      state.pendingMove = null;
+      drawMonthGrid();
+    }
+    return;
+  }
+
+  // Guard against redundant repaints when hovering the same cell
+  if (
+    state.pendingMove?.preview &&
+    state.pendingMove.taskId === taskId &&
+    state.pendingMove.toDate === cellDate
+  ) {
+    return;
+  }
+
+  // Constraint check
+  if (ctx.parentDate && cellDate < ctx.parentDate) return;
+
+  const deltaDays = diffDays(ctx.task.date, cellDate);
+  const shiftedStepIds =
+    deltaDays > 0
+      ? computeShiftedStepIds(resolvedExperimentId, taskId)
+      : new Set([ctx.task.step_id]);
+
+  state.pendingMove = {
+    experimentId: resolvedExperimentId,
+    taskId,
+    fromDate: ctx.task.date,
+    toDate: cellDate,
+    deltaDays,
+    shiftedStepIds: Array.from(shiftedStepIds),
+    label: `${ctx.protocolName}: ${ctx.task.step_name}`,
+    preview: true,
+  };
+
+  drawMonthGrid();
+}
+
+/* ── Move popover (floating confirmation) ──────────────────────── */
+
+function showMovePopover(targetDate) {
+  dismissMovePopover();
+  const pending = state.pendingMove;
+  if (!pending) return;
+
+  const deltaLabel = formatSignedDays(pending.deltaDays);
+  const shiftCount = pending.shiftedStepIds.length;
+  const downstreamCount = shiftCount > 1 ? shiftCount - 1 : 0;
+
+  const popover = document.createElement("div");
+  popover.className = "move-popover";
+  popover.id = "move-popover";
+
+  const ctx = state.taskContext.get(pending.taskId);
+  const defaultReason = ctx?.task.deviation?.reason || `Manual deviation by ${deltaLabel}`;
+
+  popover.innerHTML = `
+    <div class="move-popover-header">${escapeHtml(pending.label)}</div>
+    <div class="move-popover-delta">${pending.fromDate} &rarr; ${pending.toDate} (${deltaLabel})</div>
+    ${downstreamCount > 0 ? `<div class="move-popover-downstream">${downstreamCount} downstream task${downstreamCount > 1 ? "s" : ""} shift</div>` : ""}
+    <input id="move-popover-reason" class="move-popover-reason" value="${escapeHtml(defaultReason)}" />
+    <div class="move-popover-actions">
+      <button type="button" id="move-popover-confirm" class="btn primary">Confirm</button>
+      <button type="button" id="move-popover-cancel" class="btn">Cancel</button>
+    </div>
+    <div class="move-popover-hint"><kbd>Enter</kbd> &middot; <kbd>Esc</kbd></div>
+  `;
+
+  document.body.appendChild(popover);
+
+  popover.querySelector("#move-popover-confirm").addEventListener("click", async () => {
+    await commitPendingMove();
+  });
+
+  popover.querySelector("#move-popover-cancel").addEventListener("click", () => {
+    clearPendingMove();
+  });
+
+  const reasonInput = popover.querySelector("#move-popover-reason");
+  reasonInput.addEventListener("keydown", async (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      await commitPendingMove();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      clearPendingMove();
+    }
+  });
+
+  positionPopoverNearCell(popover, targetDate);
+
+  // Auto-focus and select the reason input
+  reasonInput.focus();
+  reasonInput.select();
+
+  // Bind outside-click handler after a tick to avoid catching the drop event
+  setTimeout(() => {
+    document.addEventListener("mousedown", handlePopoverOutsideClick);
+  }, 0);
+}
+
+function positionPopoverNearCell(popover, targetDate) {
+  // Find the matching cell in month or week view
+  const cell =
+    document.querySelector(`.month-cell[data-date="${targetDate}"]`) ||
+    document.querySelector(`.week-day[data-date="${targetDate}"]`);
+
+  if (!cell) {
+    // Fallback: center on screen
+    popover.style.left = "50%";
+    popover.style.top = "50%";
+    popover.style.transform = "translate(-50%, -50%)";
+    return;
+  }
+
+  const rect = cell.getBoundingClientRect();
+  const popoverRect = popover.getBoundingClientRect();
+
+  // Position below the cell, horizontally centered on it
+  let top = rect.bottom + 6;
+  let left = rect.left + rect.width / 2 - popoverRect.width / 2;
+
+  // Clamp to viewport
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  if (left < 8) left = 8;
+  if (left + popoverRect.width > vw - 8) left = vw - 8 - popoverRect.width;
+  if (top + popoverRect.height > vh - 8) {
+    // Place above the cell instead
+    top = rect.top - popoverRect.height - 6;
+  }
+  if (top < 8) top = 8;
+
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
+}
+
+function dismissMovePopover() {
+  const popover = document.getElementById("move-popover");
+  if (popover) popover.remove();
+  document.removeEventListener("mousedown", handlePopoverOutsideClick);
+}
+
+function handlePopoverOutsideClick(e) {
+  const popover = document.getElementById("move-popover");
+  if (!popover) {
+    document.removeEventListener("mousedown", handlePopoverOutsideClick);
+    return;
+  }
+  if (!popover.contains(e.target)) {
+    clearPendingMove();
+  }
 }
 
 /* ── Week preview for pending move ──────────────────────────────── */
