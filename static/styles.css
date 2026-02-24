@@ -290,6 +290,26 @@ h2 {
   color: var(--muted);
 }
 
+.settings-section {
+  margin-top: 1.25rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.settings-toggle input {
+  margin: 0;
+  cursor: pointer;
+}
+
 .experiment-status-badge {
   display: inline-block;
   padding: 0.08rem 0.35rem;

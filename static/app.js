@@ -60,6 +60,7 @@ const state = {
   hiddenExperimentIds: new Set(JSON.parse(localStorage.getItem("hiddenExperimentIds") || "[]")),
   hiddenProtocolIds: new Set(JSON.parse(localStorage.getItem("hiddenProtocolIds") || "[]")),
   hideStandaloneTasks: localStorage.getItem("hideStandaloneTasks") === "true",
+  showDeviations: localStorage.getItem("showDeviations") === "true",
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -1394,7 +1395,7 @@ function renderExperiments() {
       const taskCount = (exp.tasks || []).length;
       const deviationCount = (exp.tasks || []).filter((t) => t.deviation).length;
       const metaParts = [`${taskCount} tasks`];
-      if (deviationCount > 0) metaParts.push(`${deviationCount} deviated`);
+      if (state.showDeviations && deviationCount > 0) metaParts.push(`${deviationCount} deviated`);
 
       li.innerHTML = `
         <div class="experiment-item-header">
@@ -1449,6 +1450,24 @@ function renderExperiments() {
     renderWeek({ skipFetch: true });
   });
   list.appendChild(saHeader);
+
+  // Settings section
+  const settingsHeader = document.createElement("li");
+  settingsHeader.className = "settings-section";
+  settingsHeader.innerHTML = `
+    <label class="settings-toggle">
+      <input type="checkbox" ${state.showDeviations ? "checked" : ""} />
+      <span>Show deviation markers</span>
+    </label>
+  `;
+  settingsHeader.querySelector("input").addEventListener("change", (e) => {
+    state.showDeviations = e.target.checked;
+    localStorage.setItem("showDeviations", state.showDeviations);
+    renderExperiments();
+    drawMonthGrid();
+    renderWeek({ skipFetch: true });
+  });
+  list.appendChild(settingsHeader);
 }
 
 function isExperimentHidden(experimentId) {
@@ -1711,7 +1730,7 @@ function drawTaskRows(cellEl, cell, previews) {
     const classes = ["task-row"];
     if (row.kind === "preview") classes.push("preview");
     if (row.isRoot) classes.push("preview-root");
-    if (row.deviation) classes.push("deviation");
+    if (row.deviation && state.showDeviations) classes.push("deviation");
     if (row.movingAway) classes.push("moving-away");
     if (row.kind === "ghost") classes.push("ghost");
     div.className = classes.join(" ");
@@ -2416,7 +2435,7 @@ function buildWeekTaskCard(task) {
 
   const classes = ["week-task"];
   if (isSelected) classes.push("exp-selected");
-  if (task.deviation) classes.push("deviation");
+  if (task.deviation && state.showDeviations) classes.push("deviation");
   if (shifted) classes.push("ghost");
   if (task.completed) classes.push("completed");
   card.className = classes.join(" ");
@@ -2525,7 +2544,7 @@ function buildWeekTaskCard(task) {
   let statusHtml;
   if (shifted) {
     statusHtml = '<span class="ghost-badge">candidate</span>';
-  } else if (task.deviation) {
+  } else if (task.deviation && state.showDeviations) {
     const reason = task.deviation.reason || "Deviated";
     statusHtml = `<span class="week-task-status deviation">${escapeHtml(reason)}</span>`;
   } else {
