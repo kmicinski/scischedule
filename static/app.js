@@ -1415,10 +1415,6 @@ function drawTaskRows(cellEl, cell, previews) {
         : protocolColor(row.protocolId);
     div.style.setProperty("--proto-color", color);
 
-    if (row.kind === "task" && row.task.completed) {
-      div.classList.add("completed");
-    }
-
     if (row.kind === "ghost") {
       div.innerHTML = `
         <div class="task-row-main">
@@ -1429,26 +1425,11 @@ function drawTaskRows(cellEl, cell, previews) {
     } else {
       div.innerHTML = `
         <div class="task-row-main">
-          ${row.kind === "task" ? '<label class="standalone-check-wrap month-task-check-wrap"><input type="checkbox" class="standalone-check" /></label>' : ""}
           ${row.kind === "task" ? '<span class="drag-handle" title="Drag to move">::</span>' : ""}
           <div class="task-row-text">${escapeHtml(row.text)}</div>
           ${row.movingAway ? '<span class="moving-away-badge" title="Will shift when confirmed">&rarr;</span>' : ""}
         </div>
       `;
-    }
-
-    // Wire up completion checkbox for real tasks
-    if (row.kind === "task") {
-      const checkEl = div.querySelector(".standalone-check");
-      if (checkEl) {
-        checkEl.checked = row.task.completed;
-        const checkWrap = checkEl.closest(".standalone-check-wrap");
-        checkWrap.addEventListener("click", (e) => e.stopPropagation());
-        checkEl.addEventListener("change", (e) => {
-          e.stopPropagation();
-          toggleExperimentTaskCompleted(row.experimentId, row.task.id);
-        });
-      }
     }
 
     // Real tasks: draggable (unless moving away in a staged move)
@@ -1484,7 +1465,6 @@ function drawTaskRows(cellEl, cell, previews) {
       });
 
       div.addEventListener("click", (e) => {
-        if (e.target.closest(".standalone-check-wrap")) return;
         e.stopPropagation();
         if (isTouchInteraction()) {
           // Touch: toggle selection for tap-to-move

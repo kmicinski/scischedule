@@ -610,16 +610,6 @@ body.drag-task-active .task-row {
   color: #7b5b17;
 }
 
-.task-row.completed .task-row-text {
-  text-decoration: line-through;
-  opacity: 0.55;
-}
-
-.month-task-check-wrap {
-  min-width: 20px;
-  min-height: 20px;
-}
-
 .task-row.preview {
   border-style: dashed;
   background: #eef8f6;
