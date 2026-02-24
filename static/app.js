@@ -54,7 +54,7 @@ const state = {
   touchPlaceProtocol: null,
   inlineCreate: null,
   expandedTaskId: null,
-  hiddenExperimentIds: new Set(),
+  hiddenExperimentIds: new Set(JSON.parse(localStorage.getItem("hiddenExperimentIds") || "[]")),
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -1131,6 +1131,7 @@ function renderExperiments() {
       } else {
         state.hiddenExperimentIds.add(exp.id);
       }
+      localStorage.setItem("hiddenExperimentIds", JSON.stringify([...state.hiddenExperimentIds]));
       renderExperiments();
       drawMonthGrid();
       renderWeek({ skipFetch: true });
