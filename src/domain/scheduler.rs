@@ -169,16 +169,8 @@ pub fn move_task_with_constraints(
         }
     }
 
-    // Moving earlier: only the dragged task shifts — downstream tasks keep their
-    // dates because the offset represents real duration (e.g. 3-day incubation).
-    // Moving later: cascade shift to all downstream tasks to maintain constraints.
-    let shifted_step_ids = if delta_days < 0 {
-        let mut s = HashSet::new();
-        s.insert(experiment.tasks[idx].step_id);
-        s
-    } else {
-        descendant_step_ids(&children_by_parent, experiment.tasks[idx].step_id)
-    };
+    // Always cascade shift to all downstream tasks regardless of direction.
+    let shifted_step_ids = descendant_step_ids(&children_by_parent, experiment.tasks[idx].step_id);
 
     let task_date_by_step: HashMap<Uuid, NaiveDate> =
         experiment.tasks.iter().map(|t| (t.step_id, t.date)).collect();
@@ -438,6 +430,7 @@ mod tests {
             created_by: String::new(),
             created_at: 1,
             updated_at: 1,
+            archived: false,
         }
     }
 
@@ -514,9 +507,8 @@ mod tests {
     }
 
     #[test]
-    fn move_task_earlier_does_not_cascade_downstream() {
-        // Moving earlier only shifts the dragged task — downstream tasks keep
-        // their dates because the offset represents real duration.
+    fn move_task_earlier_cascades_downstream() {
+        // Moving earlier now cascades to all downstream tasks.
         let protocol = sample_protocol();
         let start = NaiveDate::from_ymd_opt(2026, 2, 5).unwrap();
         let mut experiment =
@@ -539,15 +531,15 @@ mod tests {
             experiment.tasks[0].date,
             NaiveDate::from_ymd_opt(2026, 2, 5).unwrap()
         );
-        // B: moved earlier to Feb 5
+        // B: moved earlier to Feb 5 (delta = -3)
         assert_eq!(
             experiment.tasks[1].date,
             NaiveDate::from_ymd_opt(2026, 2, 5).unwrap()
         );
-        // C: stays at Feb 10 (NOT shifted — the 2-day processing time is real)
+        // C: also shifted by -3 days: Feb 10 → Feb 7
         assert_eq!(
             experiment.tasks[2].date,
-            NaiveDate::from_ymd_opt(2026, 2, 10).unwrap()
+            NaiveDate::from_ymd_opt(2026, 2, 7).unwrap()
         );
     }
 
@@ -678,7 +670,7 @@ mod tests {
         )
         .unwrap();
 
-        // Move B back (-1): Feb 9 → Feb 8 (only B shifts, C stays at Feb 11)
+        // Move B back (-1): Feb 9 → Feb 8 — now cascades C back too (Feb 11 → Feb 10)
         move_task_with_constraints(
             &mut experiment,
             &protocol,
@@ -693,12 +685,8 @@ mod tests {
         assert!(experiment.tasks[0].deviation.is_none());
         // B: back to planned date → deviation cleared
         assert!(experiment.tasks[1].deviation.is_none());
-        // C: still shifted from planned Feb 10 to Feb 11 → deviation remains
-        assert!(experiment.tasks[2].deviation.is_some());
-        assert_eq!(
-            experiment.tasks[2].deviation.as_ref().unwrap().shifted_by_days,
-            1
-        );
+        // C: back to planned date (Feb 10) → deviation cleared
+        assert!(experiment.tasks[2].deviation.is_none());
     }
 
     #[test]
@@ -856,6 +844,7 @@ mod tests {
             created_by: String::new(),
             created_at: 1,
             updated_at: 1,
+            archived: false,
         };
 
         let start = NaiveDate::from_ymd_opt(2026, 2, 5).unwrap();
@@ -904,6 +893,7 @@ mod tests {
             created_by: String::new(),
             created_at: 1,
             updated_at: 1,
+            archived: false,
         };
 
         let start = NaiveDate::from_ymd_opt(2026, 2, 5).unwrap();
@@ -968,6 +958,7 @@ mod tests {
             created_by: String::new(),
             created_at: 1,
             updated_at: 1,
+            archived: false,
         };
 
         let start = NaiveDate::from_ymd_opt(2026, 2, 5).unwrap();

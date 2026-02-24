@@ -54,7 +54,9 @@ const state = {
   touchPlaceProtocol: null,
   inlineCreate: null,
   expandedTaskId: null,
+  expandedProtocolId: null,
   hiddenExperimentIds: new Set(JSON.parse(localStorage.getItem("hiddenExperimentIds") || "[]")),
+  hiddenProtocolIds: new Set(JSON.parse(localStorage.getItem("hiddenProtocolIds") || "[]")),
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -198,18 +200,6 @@ function bindUi() {
         target.isContentEditable ||
         target.tagName === "SELECT");
     if (inEditable) return;
-    if (state.pendingMove) {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        await commitPendingMove();
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        clearPendingMove();
-        return;
-      }
-    }
 
     if (state.currentTab !== "week") return;
 
@@ -871,6 +861,8 @@ function rebuildTaskContext() {
         .filter(Boolean)
         .sort();
 
+      const protocolDay = diffDays(dateToISO(new Date(exp.start_date + "T00:00:00")), task.planned_date || task.date) + 1;
+
       state.taskContext.set(task.id, {
         experimentId: exp.id,
         protocolId: exp.protocol_id,
@@ -878,6 +870,7 @@ function rebuildTaskContext() {
         task,
         parentDate: parentDates[parentDates.length - 1] || null,
         nextDates,
+        protocolDay,
       });
     }
   }
@@ -956,6 +949,65 @@ function beginInlineCreate(date, parentEl) {
     setTimeout(() => {
       if (state.inlineCreate?.element === card) cancelInlineCreate();
     }, 150);
+  });
+}
+
+function beginExperimentTaskCreate(date, parentEl) {
+  cancelInlineCreate();
+
+  const card = document.createElement("div");
+  card.className = "inline-create-card experiment-task-create";
+  card.addEventListener("click", (e) => e.stopPropagation());
+
+  // Experiment selector
+  const select = document.createElement("select");
+  select.className = "inline-create-exp-select";
+  const defaultOpt = document.createElement("option");
+  defaultOpt.value = "";
+  defaultOpt.textContent = "Select experiment...";
+  select.appendChild(defaultOpt);
+  for (const exp of state.experiments) {
+    const opt = document.createElement("option");
+    opt.value = exp.id;
+    opt.textContent = `${exp.protocol_name} (${exp.start_date})`;
+    select.appendChild(opt);
+  }
+  card.appendChild(select);
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "inline-create-input";
+  input.placeholder = "Task name...";
+  card.appendChild(input);
+  parentEl.appendChild(card);
+
+  state.inlineCreate = { date, element: card };
+  select.focus();
+
+  async function submit() {
+    const expId = select.value;
+    const title = input.value.trim();
+    if (!expId || !title) { cancelInlineCreate(); return; }
+    const body = { title, experiment_id: expId };
+    if (date) body.date = date;
+    const res = await api("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    cancelInlineCreate();
+    if (res.error) { showStatus(res.error, true); return; }
+    await refreshAll();
+  }
+
+  input.addEventListener("keydown", async (e) => {
+    if (e.key === "Enter") { e.preventDefault(); await submit(); }
+    else if (e.key === "Escape") { e.preventDefault(); cancelInlineCreate(); }
+  });
+
+  input.addEventListener("blur", () => {
+    setTimeout(() => {
+      if (state.inlineCreate?.element === card) cancelInlineCreate();
+    }, 200);
   });
 }
 
@@ -1140,40 +1192,91 @@ async function renderViews() {
 
 function renderProtocols() {
   protocolList.innerHTML = "";
+
+  if (state.protocols.length === 0) return;
+
   for (const p of state.protocols) {
     const li = document.createElement("li");
-    li.className = "protocol-item";
-    if (!isTouchInteraction()) li.draggable = true;
+    li.className = "protocol-accordion-item";
     li.dataset.protocolId = p.id;
-    li.style.borderLeft = `4px solid ${protocolColor(p.id)}`;
 
-    const content = document.createElement("div");
-    content.className = "protocol-item-content";
-    content.innerHTML = `<strong>${escapeHtml(p.name)}</strong><br/><small>${escapeHtml(p.description || "")}</small>`;
-    li.appendChild(content);
+    const isExpanded = state.expandedProtocolId === p.id;
 
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.className = "protocol-delete-x";
-    deleteBtn.title = "Delete protocol";
-    deleteBtn.textContent = "\u00d7";
-    deleteBtn.addEventListener("click", (e) => {
+    // Header row: always visible
+    const header = document.createElement("div");
+    header.className = "protocol-accordion-header";
+    header.style.borderLeft = `4px solid ${protocolColor(p.id)}`;
+    header.innerHTML = `
+      <span class="protocol-accordion-arrow">${isExpanded ? "&#9660;" : "&#9654;"}</span>
+      <strong class="protocol-accordion-name">${escapeHtml(p.name)}</strong>
+    `;
+
+    header.addEventListener("click", (e) => {
       e.stopPropagation();
-      deleteProtocol(p.id, p.name);
+      state.expandedProtocolId = state.expandedProtocolId === p.id ? null : p.id;
+      renderProtocols();
     });
-    li.appendChild(deleteBtn);
 
-    li.addEventListener("dragstart", (e) => {
-      setDragPayload(e, {
-        kind: "protocol",
-        protocolId: p.id,
-        previewAnchor: false,
+    li.appendChild(header);
+
+    // Expanded body: drag handle + details + edit/delete
+    if (isExpanded) {
+      const body = document.createElement("div");
+      body.className = "protocol-accordion-body";
+
+      if (p.description) {
+        const desc = document.createElement("div");
+        desc.className = "protocol-accordion-desc";
+        desc.textContent = p.description;
+        body.appendChild(desc);
+      }
+
+      const stepCount = document.createElement("div");
+      stepCount.className = "protocol-accordion-meta";
+      stepCount.textContent = `${(p.steps || []).length} step${(p.steps || []).length !== 1 ? "s" : ""}`;
+      body.appendChild(stepCount);
+
+      // Draggable chip
+      const dragChip = document.createElement("div");
+      dragChip.className = "protocol-drag-chip";
+      dragChip.textContent = p.name;
+      if (!isTouchInteraction()) dragChip.draggable = true;
+      dragChip.addEventListener("dragstart", (e) => {
+        setDragPayload(e, {
+          kind: "protocol",
+          protocolId: p.id,
+          previewAnchor: false,
+        });
       });
-    });
+      body.appendChild(dragChip);
 
-    li.addEventListener("click", () => {
-      openProtocolDialogForEdit(p.id);
-    });
+      // Action buttons
+      const actions = document.createElement("div");
+      actions.className = "protocol-accordion-actions";
+
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "btn btn-sm";
+      editBtn.textContent = "Edit";
+      editBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openProtocolDialogForEdit(p.id);
+      });
+      actions.appendChild(editBtn);
+
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "btn btn-sm danger-btn";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteProtocol(p.id, p.name);
+      });
+      actions.appendChild(deleteBtn);
+
+      body.appendChild(actions);
+      li.appendChild(body);
+    }
 
     protocolList.appendChild(li);
   }
@@ -1195,66 +1298,109 @@ function renderExperiments() {
   if (!list) return;
   list.innerHTML = "";
 
-  const sorted = [...state.experiments].sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
-  for (const exp of sorted) {
-    const li = document.createElement("li");
-    li.className = "experiment-item";
-    if (state.selectedExperimentId === exp.id) li.classList.add("selected");
+  // Group experiments by protocol
+  const byProtocol = new Map();
+  for (const exp of state.experiments) {
+    const arr = byProtocol.get(exp.protocol_id) || [];
+    arr.push(exp);
+    byProtocol.set(exp.protocol_id, arr);
+  }
 
-    const statusClass = (exp.status || "Draft").toLowerCase();
-    const taskCount = (exp.tasks || []).length;
-    const deviationCount = (exp.tasks || []).filter((t) => t.deviation).length;
-    const metaParts = [`${taskCount} tasks`];
-    if (deviationCount > 0) metaParts.push(`${deviationCount} deviated`);
+  // Sort protocols by most recent experiment activity
+  const protocolOrder = [...byProtocol.entries()].sort((a, b) => {
+    const latestA = Math.max(...a[1].map((e) => e.updated_at || 0));
+    const latestB = Math.max(...b[1].map((e) => e.updated_at || 0));
+    return latestB - latestA;
+  });
 
-    const isHidden = state.hiddenExperimentIds.has(exp.id);
-    if (isHidden) li.classList.add("hidden-experiment");
+  for (const [protocolId, experiments] of protocolOrder) {
+    const protocolName = experiments[0]?.protocol_name || "Unknown";
+    const isHidden = state.hiddenProtocolIds.has(protocolId);
+    const color = protocolColor(protocolId);
 
-    li.innerHTML = `
-      <div class="experiment-item-header">
-        <button class="experiment-visibility-btn" title="${isHidden ? "Show" : "Hide"} on calendar">${isHidden ? "&#9711;" : "&#9679;"}</button>
-        <span class="experiment-color-dot" style="background:${experimentColor(exp.id)}"></span>
-        <span class="experiment-item-name">${escapeHtml(exp.protocol_name)}</span>
-        <span class="experiment-status-badge ${statusClass}">${escapeHtml(exp.status)}</span>
-      </div>
-      <div class="experiment-item-meta">${escapeHtml(metaParts.join(" · "))} · ${escapeHtml(exp.created_by)}</div>
+    // Protocol header with toggle
+    const header = document.createElement("li");
+    header.className = "experiment-protocol-header";
+    if (isHidden) header.classList.add("hidden-protocol");
+    header.innerHTML = `
+      <button class="protocol-visibility-btn" title="${isHidden ? "Show" : "Hide"} protocol on calendar">
+        <span class="protocol-toggle-dot" style="background:${isHidden ? "transparent" : color}; border-color:${color}"></span>
+      </button>
+      <span class="protocol-header-name">${escapeHtml(protocolName)}</span>
+      <span class="protocol-exp-count">${experiments.length}</span>
     `;
 
-    li.querySelector(".experiment-visibility-btn").addEventListener("click", (e) => {
+    header.querySelector(".protocol-visibility-btn").addEventListener("click", (e) => {
       e.stopPropagation();
-      if (state.hiddenExperimentIds.has(exp.id)) {
-        state.hiddenExperimentIds.delete(exp.id);
+      if (state.hiddenProtocolIds.has(protocolId)) {
+        state.hiddenProtocolIds.delete(protocolId);
       } else {
-        state.hiddenExperimentIds.add(exp.id);
+        state.hiddenProtocolIds.add(protocolId);
       }
-      localStorage.setItem("hiddenExperimentIds", JSON.stringify([...state.hiddenExperimentIds]));
+      localStorage.setItem("hiddenProtocolIds", JSON.stringify([...state.hiddenProtocolIds]));
       renderExperiments();
       drawMonthGrid();
       renderWeek({ skipFetch: true });
     });
 
-    li.addEventListener("click", () => {
-      if (state.selectedExperimentId === exp.id) {
-        selectExperiment(null);
-      } else {
-        selectExperiment(exp.id);
-      }
-    });
+    list.appendChild(header);
 
-    if (state.selectedExperimentId === exp.id) {
-      const deleteBtn = document.createElement("button");
-      deleteBtn.type = "button";
-      deleteBtn.className = "btn danger-btn experiment-delete-btn";
-      deleteBtn.textContent = "Delete";
-      deleteBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        deleteExperiment(exp.id);
+    // Experiments under this protocol
+    const sorted = [...experiments].sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+    for (const exp of sorted) {
+      const li = document.createElement("li");
+      li.className = "experiment-item experiment-item-indented";
+      if (state.selectedExperimentId === exp.id) li.classList.add("selected");
+      if (isHidden) li.classList.add("hidden-experiment");
+
+      const statusClass = (exp.status || "Draft").toLowerCase();
+      const taskCount = (exp.tasks || []).length;
+      const deviationCount = (exp.tasks || []).filter((t) => t.deviation).length;
+      const metaParts = [`${taskCount} tasks`];
+      if (deviationCount > 0) metaParts.push(`${deviationCount} deviated`);
+
+      li.innerHTML = `
+        <div class="experiment-item-header">
+          <span class="experiment-color-dot" style="background:${experimentColor(exp.id)}"></span>
+          <span class="experiment-item-name">${escapeHtml(exp.start_date || "")}</span>
+          <span class="experiment-status-badge ${statusClass}">${escapeHtml(exp.status)}</span>
+        </div>
+        <div class="experiment-item-meta">${escapeHtml(metaParts.join(" · "))} · ${escapeHtml(exp.created_by)}</div>
+      `;
+
+      li.addEventListener("click", () => {
+        if (state.selectedExperimentId === exp.id) {
+          selectExperiment(null);
+        } else {
+          selectExperiment(exp.id);
+        }
       });
-      li.appendChild(deleteBtn);
-    }
 
-    list.appendChild(li);
+      if (state.selectedExperimentId === exp.id) {
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.className = "btn danger-btn experiment-delete-btn";
+        deleteBtn.textContent = "Delete";
+        deleteBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          deleteExperiment(exp.id);
+        });
+        li.appendChild(deleteBtn);
+      }
+
+      list.appendChild(li);
+    }
   }
+}
+
+function isExperimentHidden(experimentId) {
+  if (state.hiddenExperimentIds.has(experimentId)) return true;
+  const ctx = [...state.taskContext.values()].find((c) => c.experimentId === experimentId);
+  if (ctx && state.hiddenProtocolIds.has(ctx.protocolId)) return true;
+  // Also check experiment's protocol_id directly
+  const exp = state.experiments.find((e) => e.id === experimentId);
+  if (exp && state.hiddenProtocolIds.has(exp.protocol_id)) return true;
+  return false;
 }
 
 /* ── Rendering: month view ──────────────────────────────────────── */
@@ -1404,19 +1550,11 @@ function drawMonthGrid() {
         beginPlacement(drag.protocolId || state.placement?.protocolId, cell.date);
         drawMonthGrid();
       } else if (drag?.kind === "task" && drag.taskId) {
-        if (state.pendingMove?.preview && state.pendingMove.toDate === cell.date) {
-          // Promote existing preview to staged move
-          delete state.pendingMove.preview;
-          showMovePopover(cell.date);
-          drawMonthGrid();
-          renderWeek({ skipFetch: true });
-        } else {
-          stageMove(
-            resolveTaskExperimentId(drag.taskId, drag.experimentId),
-            drag.taskId,
-            cell.date,
-          );
-        }
+        directMove(
+          resolveTaskExperimentId(drag.taskId, drag.experimentId),
+          drag.taskId,
+          cell.date,
+        );
       }
       clearActiveDrag();
     });
@@ -1444,7 +1582,7 @@ function drawTaskRows(cellEl, cell, previews) {
   for (const task of sorted) {
     const ctx = state.taskContext.get(task.id);
     if (!ctx) continue;
-    if (state.hiddenExperimentIds.has(ctx.experimentId)) continue;
+    if (isExperimentHidden(ctx.experimentId)) continue;
 
     const isMovingAway =
       pending &&
@@ -1460,11 +1598,12 @@ function drawTaskRows(cellEl, cell, previews) {
       nextDates: ctx.nextDates,
       deviation: Boolean(task.deviation),
       movingAway: isMovingAway,
+      protocolDay: ctx.protocolDay,
     });
   }
 
   // 2. Ghost rows — tasks projected to arrive at this cell's date
-  if (pending && shiftedStepIds && !state.hiddenExperimentIds.has(pending.experimentId)) {
+  if (pending && shiftedStepIds && !isExperimentHidden(pending.experimentId)) {
     const exp = state.experiments.find((e) => e.id === pending.experimentId);
     if (exp) {
       for (const task of exp.tasks) {
@@ -1542,9 +1681,13 @@ function drawTaskRows(cellEl, cell, previews) {
         </div>
       `;
     } else {
+      const protocolDayBadge = row.kind === "task" && row.protocolDay != null
+        ? `<span class="protocol-day-badge">D${row.protocolDay}</span>`
+        : "";
       div.innerHTML = `
         <div class="task-row-main">
           ${row.kind === "task" ? '<span class="drag-handle" title="Drag to move">::</span>' : ""}
+          ${protocolDayBadge}
           <div class="task-row-text${row.kind === "task" ? " editable-step" : ""}" ${row.kind === "task" ? 'title="Double-click to rename"' : ""}>${escapeHtml(row.text)}</div>
           ${row.kind === "task" && !isTouchInteraction() ? '<span class="rename-icon" title="Rename step">&#9998;</span>' : ""}
           ${row.movingAway ? '<span class="moving-away-badge" title="Will shift when confirmed">&rarr;</span>' : ""}
@@ -1629,6 +1772,12 @@ function drawTaskRows(cellEl, cell, previews) {
         } else {
           selectExperiment(row.experimentId);
         }
+      });
+
+      div.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        showDatePickerPopover(row.experimentId, row.task.id, div);
       });
 
       div.addEventListener("mouseenter", () => {
@@ -1911,18 +2060,11 @@ async function renderWeek(options = {}) {
         return;
       }
       if (drag?.kind === "task" && drag.taskId) {
-        if (state.pendingMove?.preview && state.pendingMove.toDate === wd.date) {
-          delete state.pendingMove.preview;
-          showMovePopover(wd.date);
-          drawMonthGrid();
-          renderWeek({ skipFetch: true });
-        } else {
-          stageMove(
-            resolveTaskExperimentId(drag.taskId, drag.experimentId),
-            drag.taskId,
-            wd.date,
-          );
-        }
+        directMove(
+          resolveTaskExperimentId(drag.taskId, drag.experimentId),
+          drag.taskId,
+          wd.date,
+        );
       }
       clearActiveDrag();
     });
@@ -1949,7 +2091,7 @@ async function renderWeek(options = {}) {
 function renderWeekDayContent(wrap, wd, weekView) {
   const tasks = (wd.tasks || []).filter((t) => {
     const ctx = state.taskContext.get(t.id);
-    return !ctx || !state.hiddenExperimentIds.has(ctx.experimentId);
+    return !ctx || !isExperimentHidden(ctx.experimentId);
   });
   const saTasks = standaloneTasksForDate(wd.date);
   const d = new Date(wd.date + "T00:00:00");
@@ -1981,14 +2123,25 @@ function renderWeekDayContent(wrap, wd, weekView) {
     return (a.task.created_at || 0) - (b.task.created_at || 0);
   });
 
-  let expIndex = 0;
   allItems.forEach((item) => {
     if (item.kind === "experiment") {
-      container.appendChild(buildWeekTaskCard(item.task, expIndex++));
+      container.appendChild(buildWeekTaskCard(item.task));
     } else {
       container.appendChild(buildWeekStandaloneCard(item.task, weekView));
     }
   });
+
+  // "+" button for adding experiment-attached tasks
+  const addExpTaskBtn = document.createElement("button");
+  addExpTaskBtn.type = "button";
+  addExpTaskBtn.className = "week-add-exp-task-btn";
+  addExpTaskBtn.textContent = "+";
+  addExpTaskBtn.title = "Add task to an experiment";
+  addExpTaskBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    beginExperimentTaskCreate(wd.date, container);
+  });
+  container.appendChild(addExpTaskBtn);
 
   if (taskCount === 0) {
     const empty = document.createElement("div");
@@ -2083,7 +2236,7 @@ function renderWeekUnassignedContent(wrap, unassignedTasks, weekView) {
   });
 }
 
-function buildWeekTaskCard(task, index) {
+function buildWeekTaskCard(task) {
   const card = document.createElement("div");
   const ctx = state.taskContext.get(task.id);
   const expId = ctx?.experimentId || "";
@@ -2139,6 +2292,12 @@ function buildWeekTaskCard(task, index) {
     } else {
       selectExperiment(expId);
     }
+  });
+
+  card.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    showDatePickerPopover(expId, task.id, card);
   });
 
   // Intra-day reorder: dragover/drop on card (accepts experiment & standalone drags)
@@ -2206,13 +2365,15 @@ function buildWeekTaskCard(task, index) {
     <div class="week-task-left">
       ${!shifted ? '<label class="standalone-check-wrap"><input type="checkbox" class="standalone-check" /></label>' : ""}
       ${!shifted ? '<span class="week-drag-handle" title="Drag to reorder">&#8942;&#8942;</span>' : ""}
-      <span class="week-task-priority">${index + 1}</span>
+      <span class="week-task-priority">D${ctx?.protocolDay ?? "?"}</span>
     </div>
     <div class="week-task-body">
       <div class="week-task-step editable-step" style="font-weight:700" title="Double-click to rename">${escapeHtml(stepName)}${!isTouchInteraction() ? '<span class="rename-icon">&#9998;</span>' : ""}</div>
       <div class="week-task-status-line">${statusHtml}</div>
     </div>
     <div class="week-task-actions">
+      ${!shifted ? '<button type="button" class="week-reorder-btn reorder-up" title="Move up">&#9650;</button>' : ""}
+      ${!shifted ? '<button type="button" class="week-reorder-btn reorder-down" title="Move down">&#9660;</button>' : ""}
       ${!shifted ? '<button type="button" class="week-note-btn" title="Add or edit task note">Note</button>' : ""}
       ${!shifted ? `<button type="button" class="week-exp-delete-btn" data-exp-id="${expId}" title="Delete this experiment">\u00d7</button>` : ""}
     </div>
@@ -2228,6 +2389,20 @@ function buildWeekTaskCard(task, index) {
       checkEl.addEventListener("change", (e) => {
         e.stopPropagation();
         toggleExperimentTaskCompleted(expId, task.id);
+      });
+    }
+    const upBtn = card.querySelector(".reorder-up");
+    if (upBtn) {
+      upBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        reorderTask(expId, task.id, (task.day_priority ?? 0) - 2);
+      });
+    }
+    const downBtn = card.querySelector(".reorder-down");
+    if (downBtn) {
+      downBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        reorderTask(expId, task.id, (task.day_priority ?? 0) + 2);
       });
     }
     const noteBtn = card.querySelector(".week-note-btn");
@@ -2340,11 +2515,17 @@ function buildWeekStandaloneCard(task, weekView) {
   });
   card.addEventListener("dragend", () => clearActiveDrag());
 
-  const colorTag = typeof task.color_tag === "number" && task.color_tag < 8
-    ? TASK_TAG_COLORS[task.color_tag]
-    : null;
-  if (colorTag) {
-    card.style.borderLeftColor = colorTag.hex;
+  // If attached to an experiment, use experiment color
+  if (task.experiment_id) {
+    card.style.borderLeftColor = experimentColor(task.experiment_id);
+    card.classList.add("experiment-attached");
+  } else {
+    const colorTag = typeof task.color_tag === "number" && task.color_tag < 8
+      ? TASK_TAG_COLORS[task.color_tag]
+      : null;
+    if (colorTag) {
+      card.style.borderLeftColor = colorTag.hex;
+    }
   }
 
   const checkWrap = document.createElement("label");
@@ -2499,11 +2680,19 @@ function buildPlacementTasksByDate() {
   const ordered = topologicalSortSteps(protocol.steps);
   const datesByStep = new Map();
 
+  // Compute the minimum root offset so we can adjust the start_date
+  // such that the earliest root task lands on the anchor date.
+  const rootSteps = ordered.filter((s) => parentStepIds(s).length === 0);
+  const minRootOffset = rootSteps.length > 0
+    ? Math.min(...rootSteps.map((s) => s.default_offset_days || 0))
+    : 0;
+  const adjustedStart = addDays(state.placement.anchorDate, -minRootOffset);
+
   for (const step of ordered) {
     const parents = parentStepIds(step);
     const date =
       parents.length === 0
-        ? state.placement.anchorDate
+        ? addDays(adjustedStart, step.default_offset_days || 0)
         : addDays(
             parents
               .map((parentId) => datesByStep.get(parentId))
@@ -2525,93 +2714,48 @@ function buildPlacementTasksByDate() {
 /* ── Move staging (drag task to new date) ───────────────────────── */
 
 function stageMove(experimentId, taskId, toDate) {
-  const ctx = state.taskContext.get(taskId);
-  if (!ctx) return false;
-  const resolvedExperimentId = resolveTaskExperimentId(taskId, experimentId);
-  if (!resolvedExperimentId) return false;
+  // Direct move: immediately call the API instead of showing a popover
+  directMove(experimentId, taskId, toDate);
+  return true;
+}
 
-  // Dropping back to original date: cancel any staged move
-  if (ctx.task.date === toDate) {
-    if (state.pendingMove) {
-      clearPendingMove();
-    }
-    return false;
-  }
+async function directMove(experimentId, taskId, toDate) {
+  const ctx = state.taskContext.get(taskId);
+  if (!ctx) return;
+  const resolvedExperimentId = resolveTaskExperimentId(taskId, experimentId);
+  if (!resolvedExperimentId) return;
+
+  // Dropping back to original date: no-op
+  if (ctx.task.date === toDate) return;
 
   // Constraint check: can't move before parent
   if (ctx.parentDate && toDate < ctx.parentDate) {
     showStatus(`Cannot move before prerequisite on ${ctx.parentDate}.`, true);
-    return false;
+    return;
   }
 
-  const deltaDays = diffDays(ctx.task.date, toDate);
-
-  // Moving earlier: only the dragged task shifts — downstream tasks keep their
-  // dates because the offset represents real duration (e.g. 3-day incubation).
-  // Moving later: cascade shift to all downstream tasks.
-  const shiftedStepIds =
-    deltaDays > 0
-      ? computeShiftedStepIds(resolvedExperimentId, taskId)
-      : new Set([ctx.task.step_id]);
-  if (shiftedStepIds.size === 0) return false;
-
-  state.pendingMove = {
-    experimentId: resolvedExperimentId,
-    taskId,
-    fromDate: ctx.task.date,
-    toDate,
-    deltaDays,
-    shiftedStepIds: Array.from(shiftedStepIds),
-    label: ctx.task.step_name,
-  };
-  showMovePopover(toDate);
-
-  // Single repaint
-  drawMonthGrid();
-  renderWeek({ skipFetch: true });
-  return true;
-}
-
-function clearPendingMove() {
-  state.pendingMove = null;
-  dismissMovePopover();
-  drawMonthGrid();
-  renderWeek({ skipFetch: true });
-}
-
-async function commitPendingMove() {
-  if (!state.pendingMove) return;
-  const reasonInput = document.getElementById("move-popover-reason");
-  const reason = (reasonInput?.value || "Manual deviation").trim();
-
-  const res = await api(`/api/experiments/${state.pendingMove.experimentId}/tasks/move`, {
+  const res = await api(`/api/experiments/${resolvedExperimentId}/tasks/move`, {
     method: "PATCH",
     body: JSON.stringify({
-      task_id: state.pendingMove.taskId,
-      new_date: state.pendingMove.toDate,
-      reason,
+      task_id: taskId,
+      new_date: toDate,
     }),
   });
 
   if (res.error) {
-    // Show error inline in the popover
-    const popover = document.getElementById("move-popover");
-    if (popover) {
-      let errEl = popover.querySelector(".move-popover-error");
-      if (!errEl) {
-        errEl = document.createElement("div");
-        errEl.className = "move-popover-error";
-        popover.querySelector(".move-popover-actions")?.before(errEl);
-      }
-      errEl.textContent = res.error;
-    }
+    showStatus(res.error, true);
     return;
   }
 
-  showStatus("Move saved.");
+  showStatus("Task moved.");
   state.pendingMove = null;
-  dismissMovePopover();
   await refreshAll();
+}
+
+function clearPendingMove() {
+  state.pendingMove = null;
+  drawMonthGrid();
+  renderWeek({ skipFetch: true });
 }
 
 /* ── Live drag preview ──────────────────────────────────────────── */
@@ -2644,10 +2788,7 @@ function previewDragMove(experimentId, taskId, cellDate) {
   if (ctx.parentDate && cellDate < ctx.parentDate) return;
 
   const deltaDays = diffDays(ctx.task.date, cellDate);
-  const shiftedStepIds =
-    deltaDays > 0
-      ? computeShiftedStepIds(resolvedExperimentId, taskId)
-      : new Set([ctx.task.step_id]);
+  const shiftedStepIds = computeShiftedStepIds(resolvedExperimentId, taskId);
 
   state.pendingMove = {
     experimentId: resolvedExperimentId,
@@ -2663,127 +2804,7 @@ function previewDragMove(experimentId, taskId, cellDate) {
   drawMonthGrid();
 }
 
-/* ── Move popover (floating confirmation) ──────────────────────── */
-
-function showMovePopover(targetDate) {
-  dismissMovePopover();
-  const pending = state.pendingMove;
-  if (!pending) return;
-
-  const deltaLabel = formatSignedDays(pending.deltaDays);
-  const shiftCount = pending.shiftedStepIds.length;
-  const downstreamCount = shiftCount > 1 ? shiftCount - 1 : 0;
-
-  const popover = document.createElement("div");
-  popover.className = "move-popover";
-  popover.id = "move-popover";
-
-  const ctx = state.taskContext.get(pending.taskId);
-  const defaultReason = ctx?.task.deviation?.reason || `Manual deviation by ${deltaLabel}`;
-
-  popover.innerHTML = `
-    <div class="move-popover-header">${escapeHtml(pending.label)}</div>
-    <div class="move-popover-delta">${pending.fromDate} &rarr; ${pending.toDate} (${deltaLabel})</div>
-    ${downstreamCount > 0 ? `<div class="move-popover-downstream">${downstreamCount} downstream task${downstreamCount > 1 ? "s" : ""} shift</div>` : ""}
-    <input id="move-popover-reason" class="move-popover-reason" value="${escapeHtml(defaultReason)}" />
-    <div class="move-popover-actions">
-      <button type="button" id="move-popover-confirm" class="btn primary">Confirm</button>
-      <button type="button" id="move-popover-cancel" class="btn">Cancel</button>
-    </div>
-    <div class="move-popover-hint"><kbd>Enter</kbd> &middot; <kbd>Esc</kbd></div>
-  `;
-
-  document.body.appendChild(popover);
-
-  popover.querySelector("#move-popover-confirm").addEventListener("click", async () => {
-    await commitPendingMove();
-  });
-
-  popover.querySelector("#move-popover-cancel").addEventListener("click", () => {
-    clearPendingMove();
-  });
-
-  const reasonInput = popover.querySelector("#move-popover-reason");
-  reasonInput.addEventListener("keydown", async (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      await commitPendingMove();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      clearPendingMove();
-    }
-  });
-
-  positionPopoverNearCell(popover, targetDate);
-
-  // Auto-focus and select the reason input
-  reasonInput.focus();
-  reasonInput.select();
-
-  // Bind outside-click handler after a tick to avoid catching the drop event
-  setTimeout(() => {
-    document.addEventListener("mousedown", handlePopoverOutsideClick);
-    document.addEventListener("touchstart", handlePopoverOutsideClick);
-  }, 0);
-}
-
-function positionPopoverNearCell(popover, targetDate) {
-  // On mobile, CSS positions the popover as a bottom sheet
-  if (window.innerWidth <= 480) return;
-
-  // Find the matching cell in month or week view
-  const cell =
-    document.querySelector(`.month-cell[data-date="${targetDate}"]`) ||
-    document.querySelector(`.week-day[data-date="${targetDate}"]`);
-
-  if (!cell) {
-    // Fallback: center on screen
-    popover.style.left = "50%";
-    popover.style.top = "50%";
-    popover.style.transform = "translate(-50%, -50%)";
-    return;
-  }
-
-  const rect = cell.getBoundingClientRect();
-  const popoverRect = popover.getBoundingClientRect();
-
-  // Position below the cell, horizontally centered on it
-  let top = rect.bottom + 6;
-  let left = rect.left + rect.width / 2 - popoverRect.width / 2;
-
-  // Clamp to viewport
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  if (left < 8) left = 8;
-  if (left + popoverRect.width > vw - 8) left = vw - 8 - popoverRect.width;
-  if (top + popoverRect.height > vh - 8) {
-    // Place above the cell instead
-    top = rect.top - popoverRect.height - 6;
-  }
-  if (top < 8) top = 8;
-
-  popover.style.left = `${left}px`;
-  popover.style.top = `${top}px`;
-}
-
-function dismissMovePopover() {
-  const popover = document.getElementById("move-popover");
-  if (popover) popover.remove();
-  document.removeEventListener("mousedown", handlePopoverOutsideClick);
-  document.removeEventListener("touchstart", handlePopoverOutsideClick);
-}
-
-function handlePopoverOutsideClick(e) {
-  const popover = document.getElementById("move-popover");
-  if (!popover) {
-    document.removeEventListener("mousedown", handlePopoverOutsideClick);
-    document.removeEventListener("touchstart", handlePopoverOutsideClick);
-    return;
-  }
-  if (!popover.contains(e.target)) {
-    clearPendingMove();
-  }
-}
+/* ── Move popover (removed — moves are now direct) ─────────────── */
 
 /* ── Week preview for pending move ──────────────────────────────── */
 
@@ -2900,11 +2921,22 @@ function topologicalSortSteps(steps) {
 async function finalizePlacement() {
   if (!state.placement) return;
 
+  // Adjust start_date so the earliest root task lands on the anchor date
+  const protocol = state.protocols.find((p) => p.id === state.placement.protocolId);
+  let startDate = state.placement.anchorDate;
+  if (protocol && Array.isArray(protocol.steps)) {
+    const rootSteps = protocol.steps.filter((s) => parentStepIds(s).length === 0);
+    if (rootSteps.length > 0) {
+      const minRootOffset = Math.min(...rootSteps.map((s) => s.default_offset_days || 0));
+      startDate = addDays(state.placement.anchorDate, -minRootOffset);
+    }
+  }
+
   const res = await api("/api/experiments", {
     method: "POST",
     body: JSON.stringify({
       protocol_id: state.placement.protocolId,
-      start_date: state.placement.anchorDate,
+      start_date: startDate,
     }),
   });
 
@@ -3245,6 +3277,105 @@ function writeDragData(dataTransfer, type, value) {
 
 function clearActiveDrag() {
   state.activeDrag = null;
+}
+
+/* ── Move-to-date popover ───────────────────────────────────────── */
+
+function showDatePickerPopover(experimentId, taskId, anchorEl) {
+  dismissDatePickerPopover();
+  const ctx = state.taskContext.get(taskId);
+  if (!ctx) return;
+
+  const popover = document.createElement("div");
+  popover.className = "date-picker-popover";
+  popover.id = "date-picker-popover";
+  popover.addEventListener("click", (e) => e.stopPropagation());
+
+  const label = document.createElement("div");
+  label.className = "date-picker-label";
+  label.textContent = `Move "${ctx.task.step_name}" to:`;
+  popover.appendChild(label);
+
+  const input = document.createElement("input");
+  input.type = "date";
+  input.className = "date-picker-input";
+  input.value = ctx.task.date;
+  popover.appendChild(input);
+
+  const actions = document.createElement("div");
+  actions.className = "date-picker-actions";
+
+  const goBtn = document.createElement("button");
+  goBtn.type = "button";
+  goBtn.className = "btn primary btn-sm";
+  goBtn.textContent = "Move";
+  goBtn.addEventListener("click", async () => {
+    const newDate = input.value;
+    if (!newDate) return;
+    dismissDatePickerPopover();
+    await directMove(experimentId, taskId, newDate);
+  });
+  actions.appendChild(goBtn);
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "btn btn-sm";
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.addEventListener("click", () => dismissDatePickerPopover());
+  actions.appendChild(cancelBtn);
+
+  popover.appendChild(actions);
+  document.body.appendChild(popover);
+
+  // Position near anchor
+  const rect = anchorEl.getBoundingClientRect();
+  let top = rect.bottom + 4;
+  let left = rect.left;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  if (left + 220 > vw) left = vw - 228;
+  if (top + 120 > vh) top = rect.top - 124;
+  if (top < 4) top = 4;
+  if (left < 4) left = 4;
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
+
+  input.focus();
+
+  input.addEventListener("keydown", async (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const newDate = input.value;
+      if (!newDate) return;
+      dismissDatePickerPopover();
+      await directMove(experimentId, taskId, newDate);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      dismissDatePickerPopover();
+    }
+  });
+
+  // Close on outside click
+  setTimeout(() => {
+    document.addEventListener("mousedown", handleDatePickerOutsideClick);
+  }, 0);
+}
+
+function dismissDatePickerPopover() {
+  const el = document.getElementById("date-picker-popover");
+  if (el) el.remove();
+  document.removeEventListener("mousedown", handleDatePickerOutsideClick);
+}
+
+function handleDatePickerOutsideClick(e) {
+  const el = document.getElementById("date-picker-popover");
+  if (!el) {
+    document.removeEventListener("mousedown", handleDatePickerOutsideClick);
+    return;
+  }
+  if (!el.contains(e.target)) {
+    dismissDatePickerPopover();
+  }
 }
 
 /* ── Date utilities ─────────────────────────────────────────────── */

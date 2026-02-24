@@ -55,6 +55,7 @@ impl<R: Repository> AppService<R> {
             created_by: user.to_string(),
             created_at: now,
             updated_at: now,
+            archived: false,
         };
 
         validate_protocol(&protocol)?;
@@ -75,32 +76,63 @@ impl<R: Repository> AppService<R> {
         }
 
         let now = Utc::now().timestamp();
-        let has_experiments = self
+        let experiments_using: Vec<Experiment> = self
             .repo
             .list_experiments()?
-            .iter()
-            .any(|e| e.protocol_id == id);
+            .into_iter()
+            .filter(|e| e.protocol_id == id)
+            .collect();
 
-        if has_experiments && req.steps.len() != existing.steps.len() {
-            return Err(ServiceError::InvalidProtocolEdit(
-                "cannot add or remove protocol steps after experiments are created".to_string(),
-            ));
+        let steps_changed = req.steps.len() != existing.steps.len();
+
+        if !experiments_using.is_empty() && steps_changed {
+            // Archive the old protocol and reassign existing experiments to it
+            let mut archived = existing.clone();
+            archived.id = Uuid::new_v4();
+            archived.archived = true;
+            archived.updated_at = now;
+            self.repo.upsert_protocol(&archived)?;
+
+            // Point all existing experiments to the archived copy
+            for mut exp in experiments_using {
+                exp.protocol_id = archived.id;
+                exp.updated_at = now;
+                self.repo.upsert_experiment(&exp)?;
+            }
+
+            // Apply edits to the original protocol with fresh step IDs
+            let protocol = Protocol {
+                id: existing.id,
+                name: req.name,
+                description: req.description,
+                steps: map_steps(req.steps),
+                created_by: existing.created_by,
+                created_at: existing.created_at,
+                updated_at: now,
+                archived: false,
+            };
+
+            validate_protocol(&protocol)?;
+            self.repo.upsert_protocol(&protocol)?;
+            Ok(protocol)
+        } else {
+            // No structural change or no experiments — safe to edit in place
+            let existing_ids: Vec<Uuid> = existing.steps.iter().map(|s| s.id).collect();
+            let protocol = Protocol {
+                id: existing.id,
+                name: req.name,
+                description: req.description,
+                steps: map_steps_with_existing_ids(req.steps, &existing_ids),
+                created_by: existing.created_by,
+                created_at: existing.created_at,
+                updated_at: now,
+                archived: false,
+            };
+
+            validate_protocol(&protocol)?;
+            self.repo.upsert_protocol(&protocol)?;
+            Ok(protocol)
         }
-
-        let existing_ids: Vec<Uuid> = existing.steps.iter().map(|s| s.id).collect();
-        let protocol = Protocol {
-            id: existing.id,
-            name: req.name,
-            description: req.description,
-            steps: map_steps_with_existing_ids(req.steps, &existing_ids),
-            created_by: existing.created_by,
-            created_at: existing.created_at,
-            updated_at: now,
-        };
-
-        validate_protocol(&protocol)?;
-        self.repo.upsert_protocol(&protocol)?;
-        Ok(protocol)
     }
 
     pub fn rename_step(
@@ -153,7 +185,12 @@ impl<R: Repository> AppService<R> {
     }
 
     pub fn list_protocols(&self) -> Result<Vec<Protocol>, ServiceError> {
-        self.repo.list_protocols().map_err(Into::into)
+        Ok(self
+            .repo
+            .list_protocols()?
+            .into_iter()
+            .filter(|p| !p.archived)
+            .collect())
     }
 
     pub fn plan_experiment(
@@ -380,6 +417,7 @@ impl<R: Repository> AppService<R> {
             date: req.date,
             completed: false,
             sort_order: 0,
+            experiment_id: req.experiment_id,
             created_by: user.to_string(),
             created_at: now,
             updated_at: now,
@@ -425,6 +463,9 @@ impl<R: Repository> AppService<R> {
         }
         if let Some(sort_order) = req.sort_order {
             task.sort_order = sort_order;
+        }
+        if let Some(experiment_id) = req.experiment_id {
+            task.experiment_id = experiment_id;
         }
         task.updated_at = Utc::now().timestamp();
         self.repo.upsert_standalone_task(&task)?;
@@ -680,27 +721,29 @@ mod tests {
     }
 
     #[test]
-    fn update_protocol_rejects_step_count_change_when_experiment_exists() {
+    fn update_protocol_archives_old_when_step_count_changes_with_experiments() {
         let repo = Arc::new(MemRepo::default());
-        let svc = AppService::new(repo);
+        let svc = AppService::new(Arc::clone(&repo));
         let p = svc
             .create_protocol(sample_create_protocol(), "alice")
             .unwrap();
 
-        svc.plan_experiment(
-            PlanExperimentRequest {
-                protocol_id: p.id,
-                start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
-            },
-            "alice",
-        )
-        .unwrap();
+        let exp = svc
+            .plan_experiment(
+                PlanExperimentRequest {
+                    protocol_id: p.id,
+                    start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
+                },
+                "alice",
+            )
+            .unwrap();
 
-        let err = svc
+        // Edit protocol to add a third step (step count change)
+        let updated = svc
             .update_protocol(
                 p.id,
                 CreateProtocolRequest {
-                    name: "Protocol A Edited".into(),
+                    name: "Protocol A v2".into(),
                     description: "Edited".into(),
                     steps: vec![
                         CreateProtocolStepRequest {
@@ -725,9 +768,28 @@ mod tests {
                 },
                 "alice",
             )
-            .unwrap_err();
+            .unwrap();
 
-        assert!(matches!(err, ServiceError::InvalidProtocolEdit(_)));
+        // The updated protocol should have 3 steps and same ID
+        assert_eq!(updated.id, p.id);
+        assert_eq!(updated.name, "Protocol A v2");
+        assert_eq!(updated.steps.len(), 3);
+        assert!(!updated.archived);
+
+        // list_protocols should only return the updated (non-archived) one
+        let visible = svc.list_protocols().unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, p.id);
+
+        // The experiment should now reference the archived copy
+        let exps = svc.list_experiments("alice").unwrap();
+        assert_eq!(exps.len(), 1);
+        assert_ne!(exps[0].protocol_id, p.id); // Points to archived copy
+
+        // The archived copy should still exist in the repo
+        let archived = repo.get_protocol(exps[0].protocol_id).unwrap();
+        assert!(archived.archived);
+        assert_eq!(archived.steps.len(), 2); // Old step count
     }
 
     #[test]

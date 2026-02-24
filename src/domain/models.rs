@@ -19,6 +19,8 @@ pub struct Protocol {
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
+    #[serde(default)]
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -129,7 +131,12 @@ pub struct PlanExperimentRequest {
 pub struct MoveTaskRequest {
     pub task_id: TaskId,
     pub new_date: NaiveDate,
+    #[serde(default = "default_move_reason")]
     pub reason: String,
+}
+
+fn default_move_reason() -> String {
+    "Moved".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -162,6 +169,8 @@ pub struct StandaloneTask {
     pub completed: bool,
     #[serde(default)]
     pub sort_order: i32,
+    #[serde(default)]
+    pub experiment_id: Option<ExperimentId>,
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -178,6 +187,8 @@ pub struct CreateStandaloneTaskRequest {
     pub time_of_day: Option<String>,
     #[serde(default)]
     pub color_tag: Option<u8>,
+    #[serde(default)]
+    pub experiment_id: Option<ExperimentId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -196,6 +207,8 @@ pub struct UpdateStandaloneTaskRequest {
     pub completed: Option<bool>,
     #[serde(default)]
     pub sort_order: Option<i32>,
+    #[serde(default)]
+    pub experiment_id: Option<Option<ExperimentId>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

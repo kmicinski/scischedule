@@ -226,6 +226,7 @@ mod tests {
             created_by: String::new(),
             created_at: 1,
             updated_at: 2,
+            archived: false,
         };
 
         repo.upsert_protocol(&protocol).unwrap();
@@ -275,6 +276,7 @@ mod tests {
             created_by: String::new(),
             created_at: 1,
             updated_at: 2,
+            archived: false,
         };
         let p2 = Protocol {
             id: Uuid::new_v4(),
@@ -284,6 +286,7 @@ mod tests {
             created_by: String::new(),
             created_at: 1,
             updated_at: 9,
+            archived: false,
         };
 
         repo.upsert_protocol(&p1).unwrap();
