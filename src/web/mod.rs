@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
+    async_trait,
+    extract::{FromRequestParts, Path, Query, State},
+    http::{request::Parts, StatusCode},
     response::{Html, IntoResponse},
     routing::{get, patch, post},
     Json, Router,
@@ -22,6 +23,7 @@ pub type AppState = Arc<AppService<SledRepo>>;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/api/me", get(me))
         .route("/api/protocols", get(list_protocols).post(create_protocol))
         .route("/api/protocols/:id", get(get_protocol).patch(update_protocol))
         .route(
@@ -39,25 +41,57 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Authenticated user extracted from the `Remote-User` header set by Authelia.
+pub struct AuthUser {
+    pub username: String,
+}
+
+#[async_trait]
+impl FromRequestParts<AppState> for AuthUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &AppState) -> Result<Self, Self::Rejection> {
+        let username = parts
+            .headers
+            .get("Remote-User")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or(ApiError(ServiceError::Unauthorized))?;
+
+        Ok(AuthUser { username })
+    }
+}
+
 async fn index() -> impl IntoResponse {
     Html(include_str!("../../static/index.html"))
 }
 
+async fn me(user: AuthUser) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "username": user.username,
+        "display_name": user.username,
+    }))
+}
+
 async fn create_protocol(
     State(service): State<AppState>,
+    user: AuthUser,
     Json(req): Json<CreateProtocolRequest>,
 ) -> Result<Json<crate::domain::Protocol>, ApiError> {
-    Ok(Json(service.create_protocol(req)?))
+    Ok(Json(service.create_protocol(req, &user.username)?))
 }
 
 async fn list_protocols(
     State(service): State<AppState>,
+    _user: AuthUser,
 ) -> Result<Json<Vec<crate::domain::Protocol>>, ApiError> {
     Ok(Json(service.list_protocols()?))
 }
 
 async fn get_protocol(
     State(service): State<AppState>,
+    _user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<crate::domain::Protocol>, ApiError> {
     Ok(Json(service.get_protocol(id)?))
@@ -65,46 +99,52 @@ async fn get_protocol(
 
 async fn update_protocol(
     State(service): State<AppState>,
+    user: AuthUser,
     Path(id): Path<Uuid>,
     Json(req): Json<CreateProtocolRequest>,
 ) -> Result<Json<crate::domain::Protocol>, ApiError> {
-    Ok(Json(service.update_protocol(id, req)?))
+    Ok(Json(service.update_protocol(id, req, &user.username)?))
 }
 
 async fn plan_experiment(
     State(service): State<AppState>,
+    user: AuthUser,
     Json(req): Json<PlanExperimentRequest>,
 ) -> Result<Json<crate::domain::Experiment>, ApiError> {
-    Ok(Json(service.plan_experiment(req)?))
+    Ok(Json(service.plan_experiment(req, &user.username)?))
 }
 
 async fn list_experiments(
     State(service): State<AppState>,
+    user: AuthUser,
 ) -> Result<Json<Vec<crate::domain::Experiment>>, ApiError> {
-    Ok(Json(service.list_experiments()?))
+    Ok(Json(service.list_experiments(&user.username)?))
 }
 
 async fn lock_experiment(
     State(service): State<AppState>,
+    user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<crate::domain::Experiment>, ApiError> {
-    Ok(Json(service.lock_experiment(id)?))
+    Ok(Json(service.lock_experiment(id, &user.username)?))
 }
 
 async fn move_task(
     State(service): State<AppState>,
+    user: AuthUser,
     Path(id): Path<Uuid>,
     Json(req): Json<MoveTaskRequest>,
 ) -> Result<Json<crate::domain::Experiment>, ApiError> {
-    Ok(Json(service.move_task(id, req)?))
+    Ok(Json(service.move_task(id, req, &user.username)?))
 }
 
 async fn reorder_task(
     State(service): State<AppState>,
+    user: AuthUser,
     Path(id): Path<Uuid>,
     Json(req): Json<ReorderTaskRequest>,
 ) -> Result<Json<crate::domain::Experiment>, ApiError> {
-    Ok(Json(service.reorder_task(id, req)?))
+    Ok(Json(service.reorder_task(id, req, &user.username)?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,24 +162,29 @@ struct WeekQuery {
 
 async fn month_view(
     State(service): State<AppState>,
+    user: AuthUser,
     Query(query): Query<MonthQuery>,
 ) -> Result<Json<crate::domain::MonthView>, ApiError> {
-    Ok(Json(service.month_view(query.year, query.month)?))
+    Ok(Json(
+        service.month_view(query.year, query.month, &user.username)?,
+    ))
 }
 
 async fn week_view(
     State(service): State<AppState>,
+    user: AuthUser,
     Query(query): Query<WeekQuery>,
 ) -> Result<Json<crate::domain::WeekView>, ApiError> {
     Ok(Json(service.week_view(
         query.year,
         query.month,
         query.day,
+        &user.username,
     )?))
 }
 
 #[derive(Debug)]
-struct ApiError(ServiceError);
+pub struct ApiError(ServiceError);
 
 impl From<ServiceError> for ApiError {
     fn from(value: ServiceError) -> Self {
@@ -150,6 +195,8 @@ impl From<ServiceError> for ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let status = match &self.0 {
+            ServiceError::Unauthorized => StatusCode::UNAUTHORIZED,
+            ServiceError::Forbidden => StatusCode::FORBIDDEN,
             ServiceError::NotFound => StatusCode::NOT_FOUND,
             ServiceError::Repo(crate::repo::RepoError::NotFound) => StatusCode::NOT_FOUND,
             ServiceError::Schedule(_) => StatusCode::BAD_REQUEST,

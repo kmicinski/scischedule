@@ -19,6 +19,10 @@ fn app() -> axum::Router {
     web::router(svc)
 }
 
+fn authed(builder: axum::http::request::Builder) -> axum::http::request::Builder {
+    builder.header("Remote-User", "alice")
+}
+
 #[tokio::test]
 async fn health_index_renders() {
     let app = app();
@@ -28,6 +32,40 @@ async fn health_index_renders() {
         .unwrap();
 
     assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn missing_remote_user_returns_401() {
+    let app = app();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/protocols")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn me_endpoint_returns_username() {
+    let app = app();
+    let res = app
+        .oneshot(
+            authed(Request::builder().uri("/api/me"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["username"], "alice");
 }
 
 #[tokio::test]
@@ -46,22 +84,26 @@ async fn create_protocol_then_list_protocols() {
     let create = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/protocols")
-                .header("content-type", "application/json")
-                .body(Body::from(create_body.to_string()))
-                .unwrap(),
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
         )
         .await
         .unwrap();
 
     assert_eq!(create.status(), StatusCode::OK);
+    let create_bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let protocol: serde_json::Value = serde_json::from_slice(&create_bytes).unwrap();
+    assert_eq!(protocol["created_by"], "alice");
 
     let list = app
         .oneshot(
-            Request::builder()
-                .uri("/api/protocols")
+            authed(Request::builder().uri("/api/protocols"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -90,12 +132,14 @@ async fn update_protocol_via_patch() {
     let create = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/protocols")
-                .header("content-type", "application/json")
-                .body(Body::from(create_body.to_string()))
-                .unwrap(),
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -116,12 +160,14 @@ async fn update_protocol_via_patch() {
     let update = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!("/api/protocols/{}", protocol["id"].as_str().unwrap()))
-                .header("content-type", "application/json")
-                .body(Body::from(update_body.to_string()))
-                .unwrap(),
+            authed(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/protocols/{}", protocol["id"].as_str().unwrap()))
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(update_body.to_string()))
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -149,12 +195,14 @@ async fn plan_lock_and_move_flow() {
     let create = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/protocols")
-                .header("content-type", "application/json")
-                .body(Body::from(create_body.to_string()))
-                .unwrap(),
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -163,37 +211,41 @@ async fn plan_lock_and_move_flow() {
 
     let plan_body = serde_json::json!({
       "protocol_id": protocol["id"],
-      "start_date": "2026-02-05",
-      "created_by": "alice"
+      "start_date": "2026-02-05"
     });
 
     let plan = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/experiments")
-                .header("content-type", "application/json")
-                .body(Body::from(plan_body.to_string()))
-                .unwrap(),
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/experiments")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(plan_body.to_string()))
+            .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(plan.status(), StatusCode::OK);
     let plan_bytes = plan.into_body().collect().await.unwrap().to_bytes();
     let exp: serde_json::Value = serde_json::from_slice(&plan_bytes).unwrap();
+    assert_eq!(exp["created_by"], "alice");
 
     let lock = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!(
-                    "/api/experiments/{}/lock",
-                    exp["id"].as_str().unwrap()
-                ))
-                .body(Body::empty())
-                .unwrap(),
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/experiments/{}/lock",
+                        exp["id"].as_str().unwrap()
+                    )),
+            )
+            .body(Body::empty())
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -209,15 +261,17 @@ async fn plan_lock_and_move_flow() {
     let moved = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!(
-                    "/api/experiments/{}/tasks/move",
-                    exp["id"].as_str().unwrap()
-                ))
-                .header("content-type", "application/json")
-                .body(Body::from(move_body.to_string()))
-                .unwrap(),
+            authed(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/experiments/{}/tasks/move",
+                        exp["id"].as_str().unwrap()
+                    ))
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(move_body.to_string()))
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -236,10 +290,12 @@ async fn month_and_week_views_work() {
     let month_res = app
         .clone()
         .oneshot(
-            Request::builder()
-                .uri(format!("/api/views/month?year={year}&month={month}"))
-                .body(Body::empty())
-                .unwrap(),
+            authed(
+                Request::builder()
+                    .uri(format!("/api/views/month?year={year}&month={month}")),
+            )
+            .body(Body::empty())
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -247,15 +303,14 @@ async fn month_and_week_views_work() {
 
     let week_res = app
         .oneshot(
-            Request::builder()
-                .uri(format!(
-                    "/api/views/week?year={}&month={}&day={}",
-                    year,
-                    month,
-                    now.day()
-                ))
-                .body(Body::empty())
-                .unwrap(),
+            authed(Request::builder().uri(format!(
+                "/api/views/week?year={}&month={}&day={}",
+                year,
+                month,
+                now.day()
+            )))
+            .body(Body::empty())
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -278,12 +333,14 @@ async fn move_rejects_invalid_dates() {
     let create = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/protocols")
-                .header("content-type", "application/json")
-                .body(Body::from(create_body.to_string()))
-                .unwrap(),
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -293,19 +350,20 @@ async fn move_rejects_invalid_dates() {
 
     let plan_body = serde_json::json!({
       "protocol_id": protocol["id"],
-      "start_date": NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
-      "created_by": "alice"
+      "start_date": NaiveDate::from_ymd_opt(2026, 2, 5).unwrap()
     });
 
     let plan = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/experiments")
-                .header("content-type", "application/json")
-                .body(Body::from(plan_body.to_string()))
-                .unwrap(),
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/experiments")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(plan_body.to_string()))
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -321,15 +379,17 @@ async fn move_rejects_invalid_dates() {
 
     let moved = app
         .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!(
-                    "/api/experiments/{}/tasks/move",
-                    exp["id"].as_str().unwrap()
-                ))
-                .header("content-type", "application/json")
-                .body(Body::from(move_body.to_string()))
-                .unwrap(),
+            authed(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/experiments/{}/tasks/move",
+                        exp["id"].as_str().unwrap()
+                    ))
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(move_body.to_string()))
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -354,12 +414,14 @@ async fn move_rejects_skipping_prerequisites() {
     let create = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/protocols")
-                .header("content-type", "application/json")
-                .body(Body::from(create_body.to_string()))
-                .unwrap(),
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -369,19 +431,20 @@ async fn move_rejects_skipping_prerequisites() {
 
     let plan_body = serde_json::json!({
       "protocol_id": protocol["id"],
-      "start_date": "2026-02-05",
-      "created_by": "alice"
+      "start_date": "2026-02-05"
     });
 
     let plan = app
         .clone()
         .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/experiments")
-                .header("content-type", "application/json")
-                .body(Body::from(plan_body.to_string()))
-                .unwrap(),
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/experiments")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(plan_body.to_string()))
+            .unwrap(),
         )
         .await
         .unwrap();
@@ -397,18 +460,206 @@ async fn move_rejects_skipping_prerequisites() {
 
     let moved = app
         .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri(format!(
-                    "/api/experiments/{}/tasks/move",
-                    exp["id"].as_str().unwrap()
-                ))
-                .header("content-type", "application/json")
-                .body(Body::from(move_body.to_string()))
-                .unwrap(),
+            authed(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/experiments/{}/tasks/move",
+                        exp["id"].as_str().unwrap()
+                    ))
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(move_body.to_string()))
+            .unwrap(),
         )
         .await
         .unwrap();
 
     assert_eq!(moved.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn user_cannot_see_other_users_experiments() {
+    let app = app();
+
+    // Alice creates a protocol and experiment
+    let create_body = serde_json::json!({
+      "name": "Protocol E",
+      "description": "E desc",
+      "steps": [
+        {"name":"Step1", "details":"x", "parent_step_index": null, "default_offset_days": 0}
+      ]
+    });
+
+    app.clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let list = app
+        .clone()
+        .oneshot(
+            authed(Request::builder().uri("/api/protocols"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = list.into_body().collect().await.unwrap().to_bytes();
+    let protocols: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    let protocol_id = protocols[0]["id"].as_str().unwrap();
+
+    let plan_body = serde_json::json!({
+      "protocol_id": protocol_id,
+      "start_date": "2026-02-05"
+    });
+
+    app.clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/experiments")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(plan_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Alice can see the experiment
+    let alice_list = app
+        .clone()
+        .oneshot(
+            authed(Request::builder().uri("/api/experiments"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = alice_list.into_body().collect().await.unwrap().to_bytes();
+    let alice_experiments: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(alice_experiments.len(), 1);
+
+    // Bob cannot see Alice's experiment
+    let bob_list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/experiments")
+                .header("Remote-User", "bob")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = bob_list.into_body().collect().await.unwrap().to_bytes();
+    let bob_experiments: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(bob_experiments.len(), 0);
+
+    // Both can see the protocol (shared-readable)
+    let bob_protocols = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/protocols")
+                .header("Remote-User", "bob")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = bob_protocols.into_body().collect().await.unwrap().to_bytes();
+    let bob_protos: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(bob_protos.len(), 1);
+}
+
+#[tokio::test]
+async fn user_cannot_lock_other_users_experiment() {
+    let app = app();
+
+    let create_body = serde_json::json!({
+      "name": "Protocol F",
+      "description": "F desc",
+      "steps": [
+        {"name":"Step1", "details":"x", "parent_step_index": null, "default_offset_days": 0}
+      ]
+    });
+
+    app.clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let list = app
+        .clone()
+        .oneshot(
+            authed(Request::builder().uri("/api/protocols"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = list.into_body().collect().await.unwrap().to_bytes();
+    let protocols: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+
+    let plan_body = serde_json::json!({
+      "protocol_id": protocols[0]["id"],
+      "start_date": "2026-02-05"
+    });
+
+    let plan = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/experiments")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(plan_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let plan_bytes = plan.into_body().collect().await.unwrap().to_bytes();
+    let exp: serde_json::Value = serde_json::from_slice(&plan_bytes).unwrap();
+
+    // Bob tries to lock Alice's experiment
+    let lock = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/experiments/{}/lock",
+                    exp["id"].as_str().unwrap()
+                ))
+                .header("Remote-User", "bob")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(lock.status(), StatusCode::FORBIDDEN);
 }

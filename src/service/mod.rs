@@ -24,6 +24,10 @@ pub enum ServiceError {
     InvalidProtocolEdit(String),
     #[error("not found")]
     NotFound,
+    #[error("forbidden")]
+    Forbidden,
+    #[error("unauthorized")]
+    Unauthorized,
 }
 
 pub struct AppService<R: Repository> {
@@ -35,13 +39,18 @@ impl<R: Repository> AppService<R> {
         Self { repo }
     }
 
-    pub fn create_protocol(&self, req: CreateProtocolRequest) -> Result<Protocol, ServiceError> {
+    pub fn create_protocol(
+        &self,
+        req: CreateProtocolRequest,
+        user: &str,
+    ) -> Result<Protocol, ServiceError> {
         let now = Utc::now().timestamp();
         let protocol = Protocol {
             id: Uuid::new_v4(),
             name: req.name,
             description: req.description,
             steps: map_steps(req.steps),
+            created_by: user.to_string(),
             created_at: now,
             updated_at: now,
         };
@@ -55,8 +64,14 @@ impl<R: Repository> AppService<R> {
         &self,
         id: ProtocolId,
         req: CreateProtocolRequest,
+        user: &str,
     ) -> Result<Protocol, ServiceError> {
         let existing = self.repo.get_protocol(id)?;
+
+        if !existing.created_by.is_empty() && existing.created_by != user {
+            return Err(ServiceError::Forbidden);
+        }
+
         let now = Utc::now().timestamp();
         let has_experiments = self
             .repo
@@ -76,6 +91,7 @@ impl<R: Repository> AppService<R> {
             name: req.name,
             description: req.description,
             steps: map_steps_with_existing_ids(req.steps, &existing_ids),
+            created_by: existing.created_by,
             created_at: existing.created_at,
             updated_at: now,
         };
@@ -89,16 +105,28 @@ impl<R: Repository> AppService<R> {
         self.repo.list_protocols().map_err(Into::into)
     }
 
-    pub fn plan_experiment(&self, req: PlanExperimentRequest) -> Result<Experiment, ServiceError> {
+    pub fn plan_experiment(
+        &self,
+        req: PlanExperimentRequest,
+        user: &str,
+    ) -> Result<Experiment, ServiceError> {
         let protocol = self.repo.get_protocol(req.protocol_id)?;
         let now = Utc::now().timestamp();
-        let experiment = schedule_from_protocol(&protocol, req.start_date, req.created_by, now)?;
+        let experiment =
+            schedule_from_protocol(&protocol, req.start_date, user.to_string(), now)?;
         self.repo.upsert_experiment(&experiment)?;
         Ok(experiment)
     }
 
-    pub fn lock_experiment(&self, id: ExperimentId) -> Result<Experiment, ServiceError> {
+    pub fn lock_experiment(
+        &self,
+        id: ExperimentId,
+        user: &str,
+    ) -> Result<Experiment, ServiceError> {
         let experiment = self.repo.get_experiment(id)?;
+        if experiment.created_by != user {
+            return Err(ServiceError::Forbidden);
+        }
         let now = Utc::now().timestamp();
         let experiment = lock_experiment(experiment, now);
         self.repo.upsert_experiment(&experiment)?;
@@ -109,8 +137,12 @@ impl<R: Repository> AppService<R> {
         &self,
         experiment_id: ExperimentId,
         req: MoveTaskRequest,
+        user: &str,
     ) -> Result<Experiment, ServiceError> {
         let mut experiment = self.repo.get_experiment(experiment_id)?;
+        if experiment.created_by != user {
+            return Err(ServiceError::Forbidden);
+        }
         let protocol = self.repo.get_protocol(experiment.protocol_id)?;
         let now = Utc::now().timestamp();
 
@@ -131,30 +163,60 @@ impl<R: Repository> AppService<R> {
         &self,
         experiment_id: ExperimentId,
         req: ReorderTaskRequest,
+        user: &str,
     ) -> Result<Experiment, ServiceError> {
         let mut experiment = self.repo.get_experiment(experiment_id)?;
+        if experiment.created_by != user {
+            return Err(ServiceError::Forbidden);
+        }
         let now = Utc::now().timestamp();
         reorder_task_for_day(&mut experiment, req.task_id, req.new_priority, now)?;
         self.repo.upsert_experiment(&experiment)?;
         Ok(experiment)
     }
 
-    pub fn month_view(&self, year: i32, month: u32) -> Result<MonthView, ServiceError> {
-        let experiments = self.repo.list_experiments()?;
+    pub fn month_view(
+        &self,
+        year: i32,
+        month: u32,
+        user: &str,
+    ) -> Result<MonthView, ServiceError> {
+        let experiments: Vec<Experiment> = self
+            .repo
+            .list_experiments()?
+            .into_iter()
+            .filter(|e| e.created_by == user)
+            .collect();
         Ok(build_month_view(&experiments, year, month))
     }
 
-    pub fn week_view(&self, year: i32, month: u32, day: u32) -> Result<WeekView, ServiceError> {
+    pub fn week_view(
+        &self,
+        year: i32,
+        month: u32,
+        day: u32,
+        user: &str,
+    ) -> Result<WeekView, ServiceError> {
         let date =
             chrono::NaiveDate::from_ymd_opt(year, month, day).ok_or(ServiceError::NotFound)?;
         let weekday_offset = date.weekday().num_days_from_monday() as i64;
         let week_start = date - chrono::Duration::days(weekday_offset);
-        let experiments = self.repo.list_experiments()?;
+        let experiments: Vec<Experiment> = self
+            .repo
+            .list_experiments()?
+            .into_iter()
+            .filter(|e| e.created_by == user)
+            .collect();
         Ok(build_week_view(&experiments, week_start))
     }
 
-    pub fn list_experiments(&self) -> Result<Vec<Experiment>, ServiceError> {
-        self.repo.list_experiments().map_err(Into::into)
+    pub fn list_experiments(&self, user: &str) -> Result<Vec<Experiment>, ServiceError> {
+        Ok(self
+            .repo
+            .list_experiments()?
+            .into_iter()
+            .filter(|e| e.created_by == user)
+            .collect())
     }
 
     pub fn get_protocol(&self, id: ProtocolId) -> Result<Protocol, ServiceError> {
@@ -289,18 +351,23 @@ mod tests {
         let repo = Arc::new(MemRepo::default());
         let svc = AppService::new(repo);
 
-        let p = svc.create_protocol(sample_create_protocol()).unwrap();
+        let p = svc
+            .create_protocol(sample_create_protocol(), "alice")
+            .unwrap();
         let all = svc.list_protocols().unwrap();
 
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, p.id);
+        assert_eq!(all[0].created_by, "alice");
     }
 
     #[test]
     fn update_protocol_updates_existing_fields() {
         let repo = Arc::new(MemRepo::default());
         let svc = AppService::new(repo);
-        let p = svc.create_protocol(sample_create_protocol()).unwrap();
+        let p = svc
+            .create_protocol(sample_create_protocol(), "alice")
+            .unwrap();
         let original_ids: Vec<Uuid> = p.steps.iter().map(|s| s.id).collect();
 
         let updated = svc
@@ -324,6 +391,7 @@ mod tests {
                         },
                     ],
                 },
+                "alice",
             )
             .unwrap();
 
@@ -339,13 +407,17 @@ mod tests {
     fn update_protocol_rejects_step_count_change_when_experiment_exists() {
         let repo = Arc::new(MemRepo::default());
         let svc = AppService::new(repo);
-        let p = svc.create_protocol(sample_create_protocol()).unwrap();
+        let p = svc
+            .create_protocol(sample_create_protocol(), "alice")
+            .unwrap();
 
-        svc.plan_experiment(PlanExperimentRequest {
-            protocol_id: p.id,
-            start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
-            created_by: "alice".into(),
-        })
+        svc.plan_experiment(
+            PlanExperimentRequest {
+                protocol_id: p.id,
+                start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
+            },
+            "alice",
+        )
         .unwrap();
 
         let err = svc
@@ -375,6 +447,7 @@ mod tests {
                         },
                     ],
                 },
+                "alice",
             )
             .unwrap_err();
 
@@ -385,19 +458,23 @@ mod tests {
     fn plan_and_lock_experiment() {
         let repo = Arc::new(MemRepo::default());
         let svc = AppService::new(repo);
-        let p = svc.create_protocol(sample_create_protocol()).unwrap();
+        let p = svc
+            .create_protocol(sample_create_protocol(), "alice")
+            .unwrap();
 
         let e = svc
-            .plan_experiment(PlanExperimentRequest {
-                protocol_id: p.id,
-                start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
-                created_by: "alice".into(),
-            })
+            .plan_experiment(
+                PlanExperimentRequest {
+                    protocol_id: p.id,
+                    start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
+                },
+                "alice",
+            )
             .unwrap();
 
         assert_eq!(e.status, ExperimentStatus::Draft);
 
-        let locked = svc.lock_experiment(e.id).unwrap();
+        let locked = svc.lock_experiment(e.id, "alice").unwrap();
         assert_eq!(locked.status, ExperimentStatus::Live);
     }
 
@@ -424,14 +501,16 @@ mod tests {
                 },
             ],
         };
-        let p = svc.create_protocol(req).unwrap();
+        let p = svc.create_protocol(req, "alice").unwrap();
 
         let e = svc
-            .plan_experiment(PlanExperimentRequest {
-                protocol_id: p.id,
-                start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
-                created_by: "alice".into(),
-            })
+            .plan_experiment(
+                PlanExperimentRequest {
+                    protocol_id: p.id,
+                    start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
+                },
+                "alice",
+            )
             .unwrap();
 
         let moved = svc
@@ -442,6 +521,7 @@ mod tests {
                     new_date: NaiveDate::from_ymd_opt(2026, 2, 9).unwrap(),
                     reason: "shift".into(),
                 },
+                "alice",
             )
             .unwrap();
         assert_eq!(
@@ -456,6 +536,7 @@ mod tests {
                     task_id: moved.tasks[1].id,
                     new_priority: -10,
                 },
+                "alice",
             )
             .unwrap();
 
@@ -466,17 +547,21 @@ mod tests {
     fn month_and_week_views_return_data() {
         let repo = Arc::new(MemRepo::default());
         let svc = AppService::new(repo);
-        let p = svc.create_protocol(sample_create_protocol()).unwrap();
+        let p = svc
+            .create_protocol(sample_create_protocol(), "alice")
+            .unwrap();
 
-        svc.plan_experiment(PlanExperimentRequest {
-            protocol_id: p.id,
-            start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
-            created_by: "alice".into(),
-        })
+        svc.plan_experiment(
+            PlanExperimentRequest {
+                protocol_id: p.id,
+                start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
+            },
+            "alice",
+        )
         .unwrap();
 
-        let month = svc.month_view(2026, 2).unwrap();
-        let week = svc.week_view(2026, 2, 5).unwrap();
+        let month = svc.month_view(2026, 2, "alice").unwrap();
+        let week = svc.week_view(2026, 2, 5, "alice").unwrap();
 
         assert_eq!(month.month, 2);
         assert_eq!(week.days.len(), 7);
@@ -488,13 +573,120 @@ mod tests {
         let svc = AppService::new(repo);
 
         let err = svc
-            .plan_experiment(PlanExperimentRequest {
-                protocol_id: Uuid::new_v4(),
-                start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
-                created_by: "alice".into(),
-            })
+            .plan_experiment(
+                PlanExperimentRequest {
+                    protocol_id: Uuid::new_v4(),
+                    start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
+                },
+                "alice",
+            )
             .unwrap_err();
 
         assert!(matches!(err, ServiceError::Repo(RepoError::NotFound)));
+    }
+
+    #[test]
+    fn update_protocol_forbidden_for_other_user() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let p = svc
+            .create_protocol(sample_create_protocol(), "alice")
+            .unwrap();
+
+        let err = svc
+            .update_protocol(p.id, sample_create_protocol(), "bob")
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::Forbidden));
+    }
+
+    #[test]
+    fn lock_experiment_forbidden_for_other_user() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let p = svc
+            .create_protocol(sample_create_protocol(), "alice")
+            .unwrap();
+        let e = svc
+            .plan_experiment(
+                PlanExperimentRequest {
+                    protocol_id: p.id,
+                    start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
+                },
+                "alice",
+            )
+            .unwrap();
+
+        let err = svc.lock_experiment(e.id, "bob").unwrap_err();
+        assert!(matches!(err, ServiceError::Forbidden));
+    }
+
+    #[test]
+    fn list_experiments_filters_by_user() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let p = svc
+            .create_protocol(sample_create_protocol(), "alice")
+            .unwrap();
+
+        svc.plan_experiment(
+            PlanExperimentRequest {
+                protocol_id: p.id,
+                start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
+            },
+            "alice",
+        )
+        .unwrap();
+
+        svc.plan_experiment(
+            PlanExperimentRequest {
+                protocol_id: p.id,
+                start_date: NaiveDate::from_ymd_opt(2026, 2, 10).unwrap(),
+            },
+            "bob",
+        )
+        .unwrap();
+
+        assert_eq!(svc.list_experiments("alice").unwrap().len(), 1);
+        assert_eq!(svc.list_experiments("bob").unwrap().len(), 1);
+        assert_eq!(svc.list_experiments("charlie").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn month_view_filters_by_user() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let p = svc
+            .create_protocol(sample_create_protocol(), "alice")
+            .unwrap();
+
+        svc.plan_experiment(
+            PlanExperimentRequest {
+                protocol_id: p.id,
+                start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
+            },
+            "alice",
+        )
+        .unwrap();
+
+        svc.plan_experiment(
+            PlanExperimentRequest {
+                protocol_id: p.id,
+                start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
+            },
+            "bob",
+        )
+        .unwrap();
+
+        let alice_month = svc.month_view(2026, 2, "alice").unwrap();
+        let bob_month = svc.month_view(2026, 2, "bob").unwrap();
+        let charlie_month = svc.month_view(2026, 2, "charlie").unwrap();
+
+        let alice_tasks: usize = alice_month.cells.iter().map(|c| c.tasks.len()).sum();
+        let bob_tasks: usize = bob_month.cells.iter().map(|c| c.tasks.len()).sum();
+        let charlie_tasks: usize = charlie_month.cells.iter().map(|c| c.tasks.len()).sum();
+
+        assert_eq!(alice_tasks, 2);
+        assert_eq!(bob_tasks, 2);
+        assert_eq!(charlie_tasks, 0);
     }
 }

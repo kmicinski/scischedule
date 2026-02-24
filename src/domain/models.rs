@@ -14,6 +14,8 @@ pub struct Protocol {
     pub name: String,
     pub description: String,
     pub steps: Vec<ProtocolStep>,
+    #[serde(default)]
+    pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -118,7 +120,6 @@ pub struct CreateProtocolRequest {
 pub struct PlanExperimentRequest {
     pub protocol_id: ProtocolId,
     pub start_date: NaiveDate,
-    pub created_by: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

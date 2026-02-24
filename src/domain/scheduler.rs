@@ -434,6 +434,7 @@ mod tests {
                     default_offset_days: 2,
                 },
             ],
+            created_by: String::new(),
             created_at: 1,
             updated_at: 1,
         }
@@ -851,6 +852,7 @@ mod tests {
                     default_offset_days: 2,
                 },
             ],
+            created_by: String::new(),
             created_at: 1,
             updated_at: 1,
         };
@@ -898,6 +900,7 @@ mod tests {
                     default_offset_days: 2,
                 },
             ],
+            created_by: String::new(),
             created_at: 1,
             updated_at: 1,
         };
@@ -961,6 +964,7 @@ mod tests {
                     default_offset_days: 2,
                 },
             ],
+            created_by: String::new(),
             created_at: 1,
             updated_at: 1,
         };

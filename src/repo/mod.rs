@@ -143,6 +143,7 @@ mod tests {
                 parent_step_ids: vec![],
                 default_offset_days: 0,
             }],
+            created_by: String::new(),
             created_at: 1,
             updated_at: 2,
         };
@@ -190,6 +191,7 @@ mod tests {
             name: "Old".into(),
             description: "D".into(),
             steps: vec![],
+            created_by: String::new(),
             created_at: 1,
             updated_at: 2,
         };
@@ -198,6 +200,7 @@ mod tests {
             name: "New".into(),
             description: "D".into(),
             steps: vec![],
+            created_by: String::new(),
             created_at: 1,
             updated_at: 9,
         };

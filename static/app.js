@@ -58,7 +58,7 @@ const saveProtocolBtn = $("#save-protocol-btn");
 const placementPanel = $("#placement-panel");
 const placementTitle = $("#placement-title");
 const placementCandidate = $("#placement-candidate");
-const scientistNameInput = $("#scientist-name");
+const scientistNameEl = $("#scientist-name");
 const appShell = document.querySelector(".app-shell");
 
 /* ── Touch detection utilities ──────────────────────────────────── */
@@ -101,8 +101,19 @@ init();
 
 async function init() {
   loadTaskNotes();
+  await loadIdentity();
   bindUi();
   await refreshAll();
+}
+
+async function loadIdentity() {
+  const res = await api("/api/me");
+  if (res.username) {
+    state.username = res.username;
+    state.displayName = res.display_name || res.username;
+    const el = document.getElementById("scientist-name");
+    if (el) el.textContent = state.displayName;
+  }
 }
 
 function bindUi() {
@@ -192,7 +203,6 @@ function bindUi() {
     }
   });
 
-  initScientistProfile();
   document.addEventListener("dragend", clearActiveDrag);
 
   placementCandidate.addEventListener("dragstart", (e) => {
@@ -1897,18 +1907,11 @@ function topologicalSortSteps(steps) {
 async function finalizePlacement() {
   if (!state.placement) return;
 
-  const scientist = currentScientistName();
-  if (!scientist) {
-    showStatus("Scientist name is required.", true);
-    return;
-  }
-
   const res = await api("/api/experiments", {
     method: "POST",
     body: JSON.stringify({
       protocol_id: state.placement.protocolId,
       start_date: state.placement.anchorDate,
-      created_by: scientist,
     }),
   });
 
@@ -2078,40 +2081,8 @@ function showStatus(message, isError = false) {
   statusLine.classList.toggle("error", Boolean(isError));
 }
 
-function initScientistProfile() {
-  const key = "scischedule.scientist_name";
-  let confirmedName = localStorage.getItem(key) || scientistNameInput.value || "Katherine";
-  confirmedName = confirmedName.trim() || "Katherine";
-  scientistNameInput.value = confirmedName;
-
-  scientistNameInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      scientistNameInput.blur();
-    } else if (e.key === "Escape") {
-      scientistNameInput.value = confirmedName;
-      scientistNameInput.blur();
-    }
-  });
-
-  scientistNameInput.addEventListener("blur", () => {
-    const next = (scientistNameInput.value || "").trim();
-    if (!next || next === confirmedName) {
-      scientistNameInput.value = confirmedName;
-      return;
-    }
-    if (confirm(`Change default scientist from "${confirmedName}" to "${next}"?`)) {
-      confirmedName = next;
-      localStorage.setItem(key, confirmedName);
-      showStatus(`Default scientist set to ${confirmedName}.`);
-    } else {
-      scientistNameInput.value = confirmedName;
-    }
-  });
-}
-
 function currentScientistName() {
-  return (scientistNameInput.value || "Katherine").trim();
+  return state.username || "";
 }
 
 /* ── API / network ──────────────────────────────────────────────── */
