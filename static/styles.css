@@ -705,7 +705,7 @@ body.drag-task-active .task-row {
 
 .week-grid {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr)) minmax(0, 0.8fr);
+  grid-template-columns: minmax(0, 0.8fr) repeat(7, minmax(0, 1fr));
   gap: 0.3rem;
   flex: 1;
   min-height: 0;

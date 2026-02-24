@@ -1721,6 +1721,13 @@ async function renderWeek(options = {}) {
   weekGrid.innerHTML = "";
   weekGrid.classList.toggle("has-selection", Boolean(state.selectedExperimentId));
 
+  // "This Week" unassigned tasks column (left side)
+  const unassigned = standaloneTasksUnassigned();
+  const unassignedWrap = document.createElement("section");
+  unassignedWrap.className = "week-day week-unassigned-column";
+  renderWeekUnassignedContent(unassignedWrap, unassigned, weekView);
+  weekGrid.appendChild(unassignedWrap);
+
   for (const wd of weekView.days) {
     const wrap = document.createElement("section");
     wrap.className = "week-day";
@@ -1807,13 +1814,6 @@ async function renderWeek(options = {}) {
     renderWeekDayContent(wrap, wd, weekView);
     weekGrid.appendChild(wrap);
   }
-
-  // "This Week" unassigned tasks column
-  const unassigned = standaloneTasksUnassigned();
-  const unassignedWrap = document.createElement("section");
-  unassignedWrap.className = "week-day week-unassigned-column";
-  renderWeekUnassignedContent(unassignedWrap, unassigned, weekView);
-  weekGrid.appendChild(unassignedWrap);
 }
 
 function renderWeekDayContent(wrap, wd, weekView) {
