@@ -1807,3 +1807,69 @@ select {
   background: var(--danger);
   color: white;
 }
+
+/* ── Delete buttons (shared) ──────────────────────────────────────── */
+
+.standalone-delete-x,
+.week-exp-delete-btn {
+  border: none;
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  opacity: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 120ms ease, background 120ms ease;
+}
+
+.standalone-delete-x {
+  width: 1.1rem;
+  height: 1.1rem;
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.standalone-delete-x.week {
+  width: 1.4rem;
+  height: 1.4rem;
+  font-size: 0.88rem;
+  margin-left: auto;
+}
+
+/* Show on hover (desktop) */
+.standalone-task-row:hover .standalone-delete-x,
+.standalone-task-card:hover .standalone-delete-x,
+.week-task:hover .week-exp-delete-btn {
+  opacity: 0.55;
+}
+
+.standalone-delete-x:hover,
+.week-exp-delete-btn:hover {
+  opacity: 1 !important;
+  background: rgba(171, 47, 63, 0.1);
+}
+
+/* Mobile: always visible since there's no hover */
+@media (hover: none), (max-width: 480px) {
+  .standalone-delete-x,
+  .week-exp-delete-btn {
+    opacity: 0.5;
+    width: 1.8rem;
+    height: 1.8rem;
+    font-size: 1rem;
+  }
+}
+
+/* ── Experiment sidebar delete button ────────────────────────────── */
+
+.experiment-delete-btn {
+  margin-top: 6px;
+  width: 100%;
+  font-size: 0.75rem;
+  padding: 5px 10px;
+  border-radius: var(--radius);
+}

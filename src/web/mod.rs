@@ -5,7 +5,7 @@ use axum::{
     extract::{FromRequestParts, Path, Query, State},
     http::{request::Parts, StatusCode},
     response::{Html, IntoResponse},
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use serde::Deserialize;
@@ -32,6 +32,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/experiments",
             get(list_experiments).post(plan_experiment),
+        )
+        .route(
+            "/api/experiments/:id",
+            delete(delete_experiment_handler),
         )
         .route("/api/experiments/:id/lock", post(lock_experiment))
         .route("/api/experiments/:id/tasks/move", patch(move_task))
@@ -138,6 +142,15 @@ async fn lock_experiment(
     Path(id): Path<Uuid>,
 ) -> Result<Json<crate::domain::Experiment>, ApiError> {
     Ok(Json(service.lock_experiment(id, &user.username)?))
+}
+
+async fn delete_experiment_handler(
+    State(service): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    service.delete_experiment(id, &user.username)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn move_task(

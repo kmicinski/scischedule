@@ -923,3 +923,156 @@ async fn standalone_task_missing_auth() {
 
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn delete_experiment() {
+    let app = app();
+
+    // Create a protocol
+    let proto_body = serde_json::json!({
+        "name": "Proto",
+        "description": "D",
+        "steps": [
+            {"name":"S1", "details":"x", "parent_step_indexes": [], "default_offset_days": 0}
+        ]
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(proto_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let protocol: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    // Plan an experiment
+    let plan_body = serde_json::json!({
+        "protocol_id": protocol["id"],
+        "start_date": "2026-03-01"
+    });
+
+    let plan = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/experiments")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(plan_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = plan.into_body().collect().await.unwrap().to_bytes();
+    let exp: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let exp_id = exp["id"].as_str().unwrap();
+
+    // Delete the experiment
+    let delete = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/experiments/{exp_id}")),
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+
+    // Verify it's gone
+    let list = app
+        .oneshot(
+            authed(Request::builder().uri("/api/experiments"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = list.into_body().collect().await.unwrap().to_bytes();
+    let experiments: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(experiments.len(), 0);
+}
+
+#[tokio::test]
+async fn delete_experiment_forbidden_for_other_user() {
+    let app = app();
+
+    // Alice creates protocol + experiment
+    let proto_body = serde_json::json!({
+        "name": "Proto",
+        "description": "D",
+        "steps": [
+            {"name":"S1", "details":"x", "parent_step_indexes": [], "default_offset_days": 0}
+        ]
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(proto_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let protocol: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    let plan_body = serde_json::json!({
+        "protocol_id": protocol["id"],
+        "start_date": "2026-03-01"
+    });
+
+    let plan = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/experiments")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(plan_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = plan.into_body().collect().await.unwrap().to_bytes();
+    let exp: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let exp_id = exp["id"].as_str().unwrap();
+
+    // Bob can't delete Alice's experiment
+    let bob_delete = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/experiments/{exp_id}"))
+                .header("Remote-User", "bob")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_delete.status(), StatusCode::FORBIDDEN);
+}

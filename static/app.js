@@ -735,6 +735,15 @@ async function deleteStandaloneTask(taskId) {
   await refreshAll();
 }
 
+async function deleteExperiment(experimentId) {
+  if (!confirm("Delete this experiment? This cannot be undone.")) return;
+  await api(`/api/experiments/${experimentId}`, { method: "DELETE" });
+  if (state.selectedExperimentId === experimentId) {
+    state.selectedExperimentId = null;
+  }
+  await refreshAll();
+}
+
 async function saveExpandedStandaloneTask(taskId) {
   const card = document.querySelector(`.standalone-expanded[data-task-id="${taskId}"]`);
   if (!card) return;
@@ -891,6 +900,18 @@ function renderExperiments() {
         selectExperiment(exp.id);
       }
     });
+
+    if (state.selectedExperimentId === exp.id) {
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "btn danger-btn experiment-delete-btn";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteExperiment(exp.id);
+      });
+      li.appendChild(deleteBtn);
+    }
 
     list.appendChild(li);
   }
@@ -1323,6 +1344,17 @@ function buildMonthStandaloneRow(task) {
     div.appendChild(time);
   }
 
+  const delBtn = document.createElement("button");
+  delBtn.type = "button";
+  delBtn.className = "standalone-delete-x";
+  delBtn.textContent = "\u00d7";
+  delBtn.title = "Delete task";
+  delBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (confirm("Delete this task?")) deleteStandaloneTask(task.id);
+  });
+  div.appendChild(delBtn);
+
   const wrapper = document.createElement("div");
   wrapper.appendChild(div);
 
@@ -1702,6 +1734,7 @@ function buildWeekTaskCard(task, index) {
     </div>
     <div class="week-task-actions">
       ${!shifted ? '<button type="button" class="week-note-btn" title="Add or edit task note">Note</button>' : ""}
+      ${!shifted ? `<button type="button" class="week-exp-delete-btn" data-exp-id="${expId}" title="Delete this experiment">\u00d7</button>` : ""}
     </div>
     ${taskNote ? `<div class="week-note">${escapeHtml(taskNote)}</div>` : ""}
   `;
@@ -1712,6 +1745,13 @@ function buildWeekTaskCard(task, index) {
       noteBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         editTaskNote(task.id, task.step_name);
+      });
+    }
+    const expDelBtn = card.querySelector(".week-exp-delete-btn");
+    if (expDelBtn) {
+      expDelBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteExperiment(expId);
       });
     }
   }
@@ -1764,6 +1804,17 @@ function buildWeekStandaloneCard(task) {
     time.textContent = task.time_of_day;
     card.appendChild(time);
   }
+
+  const delBtn = document.createElement("button");
+  delBtn.type = "button";
+  delBtn.className = "standalone-delete-x week";
+  delBtn.textContent = "\u00d7";
+  delBtn.title = "Delete task";
+  delBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (confirm("Delete this task?")) deleteStandaloneTask(task.id);
+  });
+  card.appendChild(delBtn);
 
   card.addEventListener("click", (e) => {
     e.stopPropagation();

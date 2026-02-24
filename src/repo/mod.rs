@@ -21,6 +21,8 @@ pub trait Repository: Send + Sync + 'static {
     fn list_experiments(&self) -> Result<Vec<Experiment>, RepoError>;
     fn get_experiment(&self, id: ExperimentId) -> Result<Experiment, RepoError>;
 
+    fn delete_experiment(&self, id: ExperimentId) -> Result<(), RepoError>;
+
     fn upsert_standalone_task(&self, task: &StandaloneTask) -> Result<(), RepoError>;
     fn list_standalone_tasks(&self) -> Result<Vec<StandaloneTask>, RepoError>;
     fn get_standalone_task(&self, id: StandaloneTaskId) -> Result<StandaloneTask, RepoError>;
@@ -122,6 +124,17 @@ impl Repository for SledRepo {
             .ok_or(RepoError::NotFound)?;
 
         serde_json::from_slice(&value).map_err(|e| RepoError::Storage(e.to_string()))
+    }
+
+    fn delete_experiment(&self, id: ExperimentId) -> Result<(), RepoError> {
+        let key = Self::key_experiment(id);
+        self.db
+            .remove(key.as_bytes())
+            .map_err(|e| RepoError::Storage(e.to_string()))?;
+        self.db
+            .flush()
+            .map_err(|e| RepoError::Storage(e.to_string()))?;
+        Ok(())
     }
 
     fn upsert_standalone_task(&self, task: &StandaloneTask) -> Result<(), RepoError> {

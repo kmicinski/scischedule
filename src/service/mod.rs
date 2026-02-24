@@ -225,6 +225,19 @@ impl<R: Repository> AppService<R> {
         self.repo.get_protocol(id).map_err(Into::into)
     }
 
+    pub fn delete_experiment(
+        &self,
+        id: ExperimentId,
+        user: &str,
+    ) -> Result<(), ServiceError> {
+        let experiment = self.repo.get_experiment(id)?;
+        if experiment.created_by != user {
+            return Err(ServiceError::Forbidden);
+        }
+        self.repo.delete_experiment(id)?;
+        Ok(())
+    }
+
     pub fn create_standalone_task(
         &self,
         req: CreateStandaloneTaskRequest,
@@ -419,6 +432,12 @@ mod tests {
                 .find(|e| e.id == id)
                 .cloned()
                 .ok_or(RepoError::NotFound)
+        }
+
+        fn delete_experiment(&self, id: ExperimentId) -> Result<(), RepoError> {
+            let mut experiments = self.experiments.lock().unwrap();
+            experiments.retain(|e| e.id != id);
+            Ok(())
         }
 
         fn upsert_standalone_task(&self, task: &StandaloneTask) -> Result<(), RepoError> {
