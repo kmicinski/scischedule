@@ -653,35 +653,59 @@ function renderDagPreview() {
 
   const dayValues = cards.map((c) => parseInt(c.querySelector(".step-day")?.value || "1", 10));
 
-  // Build SVG-based DAG with edges
+  // SVG node dimensions
   const nodeWidth = 120;
   const nodeHeight = 28;
-  const layerGap = 60;
+  const layerGap = 50;
   const nodeGap = 10;
   const padX = 16;
   const padY = 16;
 
-  // Compute node positions per layer
-  const nodePositions = []; // nodePositions[i] = { x, y }
+  // Decide layout direction: horizontal for small graphs, vertical for wide ones
+  const containerWidth = canvas.clientWidth || 600;
+  const horizW = padX * 2 + (maxDepth + 1) * nodeWidth + maxDepth * layerGap;
+  const vertical = horizW > containerWidth * 1.3;
+
+  const nodePositions = [];
   for (let i = 0; i < cards.length; i++) nodePositions.push({ x: 0, y: 0 });
 
-  let maxLayerHeight = 0;
-  for (let d = 0; d <= maxDepth; d++) {
-    const layerHeight = layers[d].length * nodeHeight + (layers[d].length - 1) * nodeGap;
-    if (layerHeight > maxLayerHeight) maxLayerHeight = layerHeight;
-  }
+  let totalW, totalH;
 
-  for (let d = 0; d <= maxDepth; d++) {
-    const x = padX + d * (nodeWidth + layerGap);
-    const layerHeight = layers[d].length * nodeHeight + (layers[d].length - 1) * nodeGap;
-    const startY = padY + (maxLayerHeight - layerHeight) / 2;
-    layers[d].forEach((i, idx) => {
-      nodePositions[i] = { x, y: startY + idx * (nodeHeight + nodeGap) };
-    });
+  if (vertical) {
+    // Vertical: layers flow top-to-bottom, nodes in each layer spread horizontally
+    let maxLayerWidth = 0;
+    for (let d = 0; d <= maxDepth; d++) {
+      const lw = layers[d].length * nodeWidth + (layers[d].length - 1) * nodeGap;
+      if (lw > maxLayerWidth) maxLayerWidth = lw;
+    }
+    for (let d = 0; d <= maxDepth; d++) {
+      const y = padY + d * (nodeHeight + layerGap);
+      const lw = layers[d].length * nodeWidth + (layers[d].length - 1) * nodeGap;
+      const startX = padX + (maxLayerWidth - lw) / 2;
+      layers[d].forEach((i, idx) => {
+        nodePositions[i] = { x: startX + idx * (nodeWidth + nodeGap), y };
+      });
+    }
+    totalW = padX * 2 + maxLayerWidth;
+    totalH = padY * 2 + (maxDepth + 1) * nodeHeight + maxDepth * layerGap;
+  } else {
+    // Horizontal: layers flow left-to-right, nodes in each layer stack vertically
+    let maxLayerHeight = 0;
+    for (let d = 0; d <= maxDepth; d++) {
+      const lh = layers[d].length * nodeHeight + (layers[d].length - 1) * nodeGap;
+      if (lh > maxLayerHeight) maxLayerHeight = lh;
+    }
+    for (let d = 0; d <= maxDepth; d++) {
+      const x = padX + d * (nodeWidth + layerGap);
+      const lh = layers[d].length * nodeHeight + (layers[d].length - 1) * nodeGap;
+      const startY = padY + (maxLayerHeight - lh) / 2;
+      layers[d].forEach((i, idx) => {
+        nodePositions[i] = { x, y: startY + idx * (nodeHeight + nodeGap) };
+      });
+    }
+    totalW = horizW;
+    totalH = padY * 2 + maxLayerHeight;
   }
-
-  const totalW = padX * 2 + (maxDepth + 1) * nodeWidth + maxDepth * layerGap;
-  const totalH = padY * 2 + maxLayerHeight;
 
   // Build edges
   let edgeSvg = "";
@@ -690,12 +714,21 @@ function renderDagPreview() {
       if (pi < 0 || pi >= cards.length || pi === i) continue;
       const from = nodePositions[pi];
       const to = nodePositions[i];
-      const x1 = from.x + nodeWidth;
-      const y1 = from.y + nodeHeight / 2;
-      const x2 = to.x;
-      const y2 = to.y + nodeHeight / 2;
-      const cx = (x1 + x2) / 2;
-      edgeSvg += `<path d="M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#dag-arrow)"/>`;
+      if (vertical) {
+        const x1 = from.x + nodeWidth / 2;
+        const y1 = from.y + nodeHeight;
+        const x2 = to.x + nodeWidth / 2;
+        const y2 = to.y;
+        const cy = (y1 + y2) / 2;
+        edgeSvg += `<path d="M${x1},${y1} C${x1},${cy} ${x2},${cy} ${x2},${y2}" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#dag-arrow)"/>`;
+      } else {
+        const x1 = from.x + nodeWidth;
+        const y1 = from.y + nodeHeight / 2;
+        const x2 = to.x;
+        const y2 = to.y + nodeHeight / 2;
+        const cx = (x1 + x2) / 2;
+        edgeSvg += `<path d="M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#dag-arrow)"/>`;
+      }
     }
   }
 
@@ -730,7 +763,6 @@ function renderDagPreview() {
       ${edgeSvg}
       ${nodeSvg}
     </svg>`;
-
 }
 
 function protocolFormRequestPayload() {
@@ -2190,9 +2222,75 @@ function buildWeekTaskCard(task, index) {
         deleteExperiment(expId);
       });
     }
+
+    // Double-click to rename step (desktop only)
+    if (!isTouchInteraction()) {
+      const stepEl = card.querySelector(".week-task-step");
+      if (stepEl) {
+        stepEl.addEventListener("dblclick", (e) => {
+          e.stopPropagation();
+          beginInlineStepEdit(stepEl, task, ctx);
+        });
+      }
+    }
   }
 
   return card;
+}
+
+function beginInlineStepEdit(stepEl, task, ctx) {
+  if (stepEl.querySelector("input")) return;
+
+  const currentName = task.step_name || "";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = currentName;
+  input.className = "inline-step-edit";
+
+  stepEl.textContent = "";
+  stepEl.appendChild(input);
+  input.focus();
+  input.select();
+
+  let committed = false;
+
+  async function commit() {
+    if (committed) return;
+    committed = true;
+    const newName = input.value.trim();
+    if (!newName || newName === currentName) {
+      stepEl.textContent = currentName;
+      return;
+    }
+    if (!ctx) {
+      stepEl.textContent = currentName;
+      return;
+    }
+    stepEl.textContent = newName;
+    const result = await api(`/api/experiments/${ctx.experimentId}/tasks/${task.id}/rename`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: newName }),
+    });
+    if (result.error) {
+      showStatus(result.error, true);
+      stepEl.textContent = currentName;
+    } else {
+      await refreshAll();
+    }
+  }
+
+  function cancel() {
+    if (committed) return;
+    committed = true;
+    stepEl.textContent = currentName;
+  }
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    else if (e.key === "Escape") { e.preventDefault(); cancel(); }
+  });
+  input.addEventListener("blur", () => setTimeout(commit, 0));
+  input.addEventListener("click", (e) => e.stopPropagation());
 }
 
 function buildWeekStandaloneCard(task, weekView) {

@@ -1755,3 +1755,95 @@ async fn toggle_experiment_task_completed() {
     let updated2: serde_json::Value = serde_json::from_slice(&toggle2_bytes).unwrap();
     assert_eq!(updated2["tasks"][0]["completed"], false);
 }
+
+#[tokio::test]
+async fn rename_step_cascades_to_experiments() {
+    let app = app();
+
+    // Create protocol
+    let proto_body = serde_json::json!({
+        "name": "Proto",
+        "description": "D",
+        "steps": [
+            {"name":"Seed","details":"x","parent_step_indexes":[],"default_offset_days":0},
+            {"name":"Treat","details":"y","parent_step_indexes":[0],"default_offset_days":3}
+        ]
+    });
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(proto_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let protocol: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let proto_id = protocol["id"].as_str().unwrap();
+    let step_id = protocol["steps"][0]["id"].as_str().unwrap();
+
+    // Create experiment
+    let plan_body = serde_json::json!({"protocol_id": proto_id, "start_date": "2026-03-01"});
+    let plan = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/experiments")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(plan_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan.status(), StatusCode::OK);
+    let bytes = plan.into_body().collect().await.unwrap().to_bytes();
+    let exp: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(exp["tasks"][0]["step_name"], "Seed");
+
+    // Rename the step
+    let rename_body = serde_json::json!({"name": "Seed Cells"});
+    let rename = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/protocols/{}/steps/{}/rename",
+                        proto_id, step_id
+                    ))
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(rename_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rename.status(), StatusCode::OK);
+    let bytes = rename.into_body().collect().await.unwrap().to_bytes();
+    let updated_proto: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(updated_proto["steps"][0]["name"], "Seed Cells");
+
+    // Verify experiment task got the new name
+    let list = app
+        .oneshot(
+            authed(Request::builder().uri("/api/experiments"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = list.into_body().collect().await.unwrap().to_bytes();
+    let experiments: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(experiments[0]["tasks"][0]["step_name"], "Seed Cells");
+}

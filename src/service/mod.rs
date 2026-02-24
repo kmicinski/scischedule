@@ -103,6 +103,55 @@ impl<R: Repository> AppService<R> {
         Ok(protocol)
     }
 
+    pub fn rename_step(
+        &self,
+        protocol_id: ProtocolId,
+        step_id: crate::domain::StepId,
+        new_name: String,
+        user: &str,
+    ) -> Result<Protocol, ServiceError> {
+        if new_name.trim().is_empty() {
+            return Err(ServiceError::InvalidProtocolEdit(
+                "step name cannot be empty".to_string(),
+            ));
+        }
+
+        let mut protocol = self.repo.get_protocol(protocol_id)?;
+
+        if !protocol.created_by.is_empty() && protocol.created_by != user {
+            return Err(ServiceError::Forbidden);
+        }
+
+        let step = protocol
+            .steps
+            .iter_mut()
+            .find(|s| s.id == step_id)
+            .ok_or(ServiceError::NotFound)?;
+        step.name = new_name.clone();
+        protocol.updated_at = Utc::now().timestamp();
+        self.repo.upsert_protocol(&protocol)?;
+
+        // Cascade: update step_name in all experiments using this protocol
+        for mut exp in self.repo.list_experiments()? {
+            if exp.protocol_id != protocol_id {
+                continue;
+            }
+            let mut changed = false;
+            for task in &mut exp.tasks {
+                if task.step_id == step_id && task.step_name != new_name {
+                    task.step_name = new_name.clone();
+                    changed = true;
+                }
+            }
+            if changed {
+                exp.updated_at = Utc::now().timestamp();
+                self.repo.upsert_experiment(&exp)?;
+            }
+        }
+
+        Ok(protocol)
+    }
+
     pub fn list_protocols(&self) -> Result<Vec<Protocol>, ServiceError> {
         self.repo.list_protocols().map_err(Into::into)
     }
@@ -193,6 +242,33 @@ impl<R: Repository> AppService<R> {
             .find(|t| t.id == task_id)
             .ok_or(ServiceError::NotFound)?;
         task.completed = !task.completed;
+        experiment.updated_at = Utc::now().timestamp();
+        self.repo.upsert_experiment(&experiment)?;
+        Ok(experiment)
+    }
+
+    pub fn rename_task(
+        &self,
+        experiment_id: ExperimentId,
+        task_id: crate::domain::TaskId,
+        new_name: String,
+        user: &str,
+    ) -> Result<Experiment, ServiceError> {
+        if new_name.trim().is_empty() {
+            return Err(ServiceError::InvalidProtocolEdit(
+                "task name cannot be empty".to_string(),
+            ));
+        }
+        let mut experiment = self.repo.get_experiment(experiment_id)?;
+        if experiment.created_by != user {
+            return Err(ServiceError::Forbidden);
+        }
+        let task = experiment
+            .tasks
+            .iter_mut()
+            .find(|t| t.id == task_id)
+            .ok_or(ServiceError::NotFound)?;
+        task.step_name = new_name;
         experiment.updated_at = Utc::now().timestamp();
         self.repo.upsert_experiment(&experiment)?;
         Ok(experiment)

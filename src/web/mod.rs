@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         CreateProtocolRequest, CreateStandaloneTaskRequest, MoveTaskRequest,
-        PlanExperimentRequest, ReorderTaskRequest, UpdateStandaloneTaskRequest,
+        PlanExperimentRequest, RenameStepRequest, RenameTaskRequest, ReorderTaskRequest, UpdateStandaloneTaskRequest,
     },
     repo::SledRepo,
     service::{AppService, ServiceError},
@@ -29,6 +29,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/me", get(me))
         .route("/api/protocols", get(list_protocols).post(create_protocol))
         .route("/api/protocols/:id", get(get_protocol).patch(update_protocol).delete(delete_protocol_handler))
+        .route("/api/protocols/:id/steps/:step_id/rename", patch(rename_step))
         .route(
             "/api/experiments",
             get(list_experiments).post(plan_experiment),
@@ -41,6 +42,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/experiments/:id/tasks/move", patch(move_task))
         .route("/api/experiments/:id/tasks/reorder", patch(reorder_task))
         .route("/api/experiments/:id/tasks/:task_id/complete", patch(toggle_task_completed))
+        .route("/api/experiments/:id/tasks/:task_id/rename", patch(rename_task_handler))
         .route(
             "/api/tasks",
             get(list_standalone_tasks).post(create_standalone_task),
@@ -122,6 +124,17 @@ async fn update_protocol(
     Ok(Json(service.update_protocol(id, req, &user.username)?))
 }
 
+async fn rename_step(
+    State(service): State<AppState>,
+    user: AuthUser,
+    Path((id, step_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<RenameStepRequest>,
+) -> Result<Json<crate::domain::Protocol>, ApiError> {
+    Ok(Json(
+        service.rename_step(id, step_id, req.name, &user.username)?,
+    ))
+}
+
 async fn delete_protocol_handler(
     State(service): State<AppState>,
     user: AuthUser,
@@ -188,6 +201,17 @@ async fn toggle_task_completed(
 ) -> Result<Json<crate::domain::Experiment>, ApiError> {
     Ok(Json(
         service.toggle_task_completed(id, task_id, &user.username)?,
+    ))
+}
+
+async fn rename_task_handler(
+    State(service): State<AppState>,
+    user: AuthUser,
+    Path((id, task_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<RenameTaskRequest>,
+) -> Result<Json<crate::domain::Experiment>, ApiError> {
+    Ok(Json(
+        service.rename_task(id, task_id, req.name, &user.username)?,
     ))
 }
 

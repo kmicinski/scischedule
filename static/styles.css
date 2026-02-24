@@ -925,6 +925,24 @@ body.drag-task-active .task-row {
   word-break: break-word;
 }
 
+.week-task-step {
+  cursor: default;
+}
+
+.inline-step-edit {
+  width: 100%;
+  font-size: inherit;
+  font-weight: 700;
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 1px 4px;
+  background: #fff;
+  outline: none;
+  box-sizing: border-box;
+  box-shadow: 0 0 0 2px rgba(12, 95, 90, 0.12);
+}
+
 .week-task.completed .week-task-step {
   text-decoration: line-through;
   opacity: 0.55;
@@ -1443,9 +1461,9 @@ select {
 
 .dag-canvas {
   min-height: 1.5rem;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: auto;
   -webkit-overflow-scrolling: touch;
+  max-height: 340px;
 }
 
 .dag-empty {
@@ -1458,7 +1476,6 @@ select {
   display: block;
   width: 100%;
   height: auto;
-  max-height: 260px;
   font-family: inherit;
 }
 
