@@ -653,20 +653,84 @@ function renderDagPreview() {
 
   const dayValues = cards.map((c) => parseInt(c.querySelector(".step-day")?.value || "1", 10));
 
-  let html = '<div class="dag-layers">';
-  for (let d = 0; d <= maxDepth; d++) {
-    if (d > 0) html += '<div class="dag-arrow-col">\u2192</div>';
-    html += '<div class="dag-layer">';
-    for (const i of layers[d]) {
-      const dayLabel = dayValues[i] < 0 ? `D${dayValues[i]}` : `D${dayValues[i]}`;
-      const prepClass = dayValues[i] < 0 ? " dag-node-prep" : "";
-      html += `<div class="dag-node${prepClass}"><span class="dag-node-num">${escapeHtml(dayLabel)}</span><span class="dag-node-name">${escapeHtml(names[i])}</span></div>`;
-    }
-    html += "</div>";
-  }
-  html += "</div>";
+  // Build SVG-based DAG with edges
+  const nodeWidth = 120;
+  const nodeHeight = 28;
+  const layerGap = 60;
+  const nodeGap = 10;
+  const padX = 16;
+  const padY = 16;
 
-  canvas.innerHTML = html;
+  // Compute node positions per layer
+  const nodePositions = []; // nodePositions[i] = { x, y }
+  for (let i = 0; i < cards.length; i++) nodePositions.push({ x: 0, y: 0 });
+
+  let maxLayerHeight = 0;
+  for (let d = 0; d <= maxDepth; d++) {
+    const layerHeight = layers[d].length * nodeHeight + (layers[d].length - 1) * nodeGap;
+    if (layerHeight > maxLayerHeight) maxLayerHeight = layerHeight;
+  }
+
+  for (let d = 0; d <= maxDepth; d++) {
+    const x = padX + d * (nodeWidth + layerGap);
+    const layerHeight = layers[d].length * nodeHeight + (layers[d].length - 1) * nodeGap;
+    const startY = padY + (maxLayerHeight - layerHeight) / 2;
+    layers[d].forEach((i, idx) => {
+      nodePositions[i] = { x, y: startY + idx * (nodeHeight + nodeGap) };
+    });
+  }
+
+  const totalW = padX * 2 + (maxDepth + 1) * nodeWidth + maxDepth * layerGap;
+  const totalH = padY * 2 + maxLayerHeight;
+
+  // Build edges
+  let edgeSvg = "";
+  for (let i = 0; i < cards.length; i++) {
+    for (const pi of parentIndexes[i]) {
+      if (pi < 0 || pi >= cards.length || pi === i) continue;
+      const from = nodePositions[pi];
+      const to = nodePositions[i];
+      const x1 = from.x + nodeWidth;
+      const y1 = from.y + nodeHeight / 2;
+      const x2 = to.x;
+      const y2 = to.y + nodeHeight / 2;
+      const cx = (x1 + x2) / 2;
+      edgeSvg += `<path d="M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#dag-arrow)"/>`;
+    }
+  }
+
+  // Build nodes
+  let nodeSvg = "";
+  for (let i = 0; i < cards.length; i++) {
+    const { x, y } = nodePositions[i];
+    const dayVal = dayValues[i];
+    const dayLabel = dayVal < 0 ? `D${dayVal}` : `D${dayVal}`;
+    const isPrep = dayVal < 0;
+    const fill = isPrep ? "#fef9e8" : "#fff";
+    const stroke = isPrep ? "#d8c28e" : "#cbd5e1";
+    const badgeBg = isPrep ? "#7b5b17" : "var(--accent, #0c5f5a)";
+    const name = names[i].length > 14 ? names[i].slice(0, 13) + "\u2026" : names[i];
+
+    nodeSvg += `
+      <g class="dag-node-g" data-step-index="${i}">
+        <rect x="${x}" y="${y}" width="${nodeWidth}" height="${nodeHeight}" rx="14" fill="${fill}" stroke="${stroke}" stroke-width="1"/>
+        <rect x="${x + 4}" y="${y + 4}" width="28" height="20" rx="10" fill="${badgeBg}"/>
+        <text x="${x + 18}" y="${y + 18}" text-anchor="middle" fill="#fff" font-size="9" font-weight="700">${escapeHtml(dayLabel)}</text>
+        <text x="${x + 38}" y="${y + 18}" fill="#334155" font-size="10" font-weight="500">${escapeHtml(name)}</text>
+      </g>`;
+  }
+
+  canvas.innerHTML = `
+    <svg class="dag-svg" viewBox="0 0 ${totalW} ${totalH}" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <marker id="dag-arrow" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="8" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,4 L0,8 Z" fill="#94a3b8"/>
+        </marker>
+      </defs>
+      ${edgeSvg}
+      ${nodeSvg}
+    </svg>`;
+
 }
 
 function protocolFormRequestPayload() {

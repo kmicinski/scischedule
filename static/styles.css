@@ -1443,6 +1443,9 @@ select {
 
 .dag-canvas {
   min-height: 1.5rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
 .dag-empty {
@@ -1451,67 +1454,19 @@ select {
   font-style: italic;
 }
 
-.dag-layers {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.25rem;
-  overflow-x: auto;
-  padding: 0.2rem 0;
+.dag-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 260px;
+  font-family: inherit;
 }
 
-.dag-layer {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
+.dag-node-g rect {
+  transition: filter 0.15s;
 }
-
-.dag-arrow-col {
-  display: flex;
-  align-items: center;
-  color: var(--muted);
-  font-size: 0.82rem;
-  padding: 0.1rem 0;
-}
-
-.dag-node {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.2rem;
-  padding: 0.12rem 0.4rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: #fff;
-  font-size: 0.68rem;
-  white-space: nowrap;
-}
-
-.dag-node-num {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 1.2rem;
-  height: 1rem;
-  border-radius: 999px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 0.5rem;
-  font-weight: 700;
-  flex-shrink: 0;
-  padding: 0 0.15rem;
-}
-
-.dag-node-name {
-  color: var(--text);
-  font-weight: 500;
-}
-
-.dag-node-prep {
-  border-color: #d8c28e;
-  background: #fef9e8;
-}
-
-.dag-node-prep .dag-node-num {
-  background: #7b5b17;
+.dag-node-g:hover rect:first-child {
+  filter: brightness(0.95);
 }
 
 /* ── Responsive ─────────────────────────────────────────────────── */
