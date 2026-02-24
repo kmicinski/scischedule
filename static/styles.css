@@ -1765,8 +1765,8 @@ select {
 .standalone-task-card {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: 5px;
+  padding: 4px 6px;
   border-radius: var(--radius);
   background: var(--panel);
   border: 1px solid var(--border);
@@ -1933,10 +1933,9 @@ select {
 }
 
 .standalone-delete-x.week {
-  width: 1.4rem;
-  height: 1.4rem;
-  font-size: 0.88rem;
-  margin-left: auto;
+  width: 1.1rem;
+  height: 1.1rem;
+  font-size: 0.78rem;
 }
 
 /* Show on hover (desktop) */
@@ -1993,6 +1992,33 @@ select {
 .week-unassigned-header .week-day-count {
   background: #d8c28e;
   color: #5e4410;
+}
+
+.week-unassigned-add-btn {
+  border: 1px solid #d8c28e;
+  background: rgba(255, 193, 7, 0.12);
+  color: #7b5b17;
+  font-size: 0.82rem;
+  font-weight: 700;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin-left: auto;
+  transition: background 80ms, border-color 80ms;
+}
+
+.week-unassigned-add-btn:hover {
+  background: rgba(255, 193, 7, 0.25);
+  border-color: #7b5b17;
+}
+
+.week-unassigned-empty {
+  color: #9a8a5a;
 }
 
 /* ── Day picker (expanded standalone card) ──────────────────────── */

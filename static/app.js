@@ -1839,7 +1839,30 @@ function renderWeekUnassignedContent(wrap, unassignedTasks, weekView) {
 
   const header = document.createElement("div");
   header.className = "week-day-header week-unassigned-header";
-  header.innerHTML = `<span class="week-day-label">This Week</span>${taskCount > 0 ? `<span class="week-day-count">${taskCount}</span>` : ""}`;
+
+  const headerLabel = document.createElement("span");
+  headerLabel.className = "week-day-label";
+  headerLabel.textContent = "This Week";
+  header.appendChild(headerLabel);
+
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "week-unassigned-add-btn";
+  addBtn.textContent = "+";
+  addBtn.title = "Add unassigned task";
+  addBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    beginInlineCreate(null, container);
+  });
+  header.appendChild(addBtn);
+
+  if (taskCount > 0) {
+    const count = document.createElement("span");
+    count.className = "week-day-count";
+    count.textContent = taskCount;
+    header.appendChild(count);
+  }
+
   wrap.appendChild(header);
 
   const container = document.createElement("div");
@@ -1852,8 +1875,8 @@ function renderWeekUnassignedContent(wrap, unassignedTasks, weekView) {
 
   if (taskCount === 0) {
     const empty = document.createElement("div");
-    empty.className = "week-day-empty";
-    empty.textContent = "No unassigned tasks";
+    empty.className = "week-day-empty week-unassigned-empty";
+    empty.textContent = "Click + to add a task for this week";
     container.appendChild(empty);
   }
 
@@ -2039,11 +2062,6 @@ function buildWeekStandaloneCard(task, weekView) {
   });
   check.addEventListener("click", (e) => e.stopPropagation());
   card.appendChild(check);
-
-  const label = document.createElement("span");
-  label.className = "standalone-label";
-  label.textContent = "Task";
-  card.appendChild(label);
 
   const title = document.createElement("span");
   title.className = "standalone-title";
