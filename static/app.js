@@ -2419,10 +2419,29 @@ function currentScientistName() {
 /* ── API / network ──────────────────────────────────────────────── */
 
 async function api(url, opts = {}) {
-  const res = await fetch(url, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: { "Content-Type": "application/json" },
+      redirect: "follow",
+      ...opts,
+    });
+  } catch (err) {
+    // Network error or CORS failure from auth redirect
+    window.location.reload();
+    return { error: "Session expired — redirecting to login." };
+  }
+
+  // If redirected to auth page, the response will be HTML not JSON
+  if (res.redirected || res.url.includes("auth.kmicinski.com")) {
+    window.location.reload();
+    return { error: "Session expired — redirecting to login." };
+  }
+
+  if (res.status === 401) {
+    window.location.reload();
+    return { error: "Session expired — redirecting to login." };
+  }
 
   const text = await res.text();
   if (!text) return {};
@@ -2430,6 +2449,11 @@ async function api(url, opts = {}) {
   try {
     return JSON.parse(text);
   } catch {
+    // Got HTML back (auth redirect page) instead of JSON
+    if (text.includes("<!DOCTYPE") || text.includes("<html")) {
+      window.location.reload();
+      return { error: "Session expired — redirecting to login." };
+    }
     return { error: text };
   }
 }
