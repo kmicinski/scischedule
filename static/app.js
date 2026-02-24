@@ -21,12 +21,24 @@ const PROTOCOL_COLORS = [
   "#52796f",
 ];
 
+const TASK_TAG_COLORS = [
+  { name: "blue",   hex: "#2563eb", bg: "#dbeafe" },
+  { name: "green",  hex: "#16a34a", bg: "#dcfce7" },
+  { name: "red",    hex: "#dc2626", bg: "#fee2e2" },
+  { name: "purple", hex: "#9333ea", bg: "#f3e8ff" },
+  { name: "orange", hex: "#ea580c", bg: "#ffedd5" },
+  { name: "teal",   hex: "#0d9488", bg: "#ccfbf1" },
+  { name: "pink",   hex: "#db2777", bg: "#fce7f3" },
+  { name: "yellow", hex: "#ca8a04", bg: "#fef9c3" },
+];
+
 const state = {
   now: new Date(),
   monthCursor: new Date(),
   weekCursor: new Date(),
   protocols: [],
   experiments: [],
+  standaloneTasks: [],
   monthView: null,
   weekView: null,
   currentTab: "month",
@@ -40,6 +52,8 @@ const state = {
   protocolEditor: null,
   touchMoveSource: null,
   touchPlaceProtocol: null,
+  inlineCreate: null,
+  expandedTaskId: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -119,6 +133,8 @@ async function loadIdentity() {
 function bindUi() {
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => {
+      cancelInlineCreate();
+      state.expandedTaskId = null;
       document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
       state.currentTab = tab.dataset.view;
@@ -140,21 +156,25 @@ function bindUi() {
   });
 
   $("#month-prev").addEventListener("click", async () => {
+    cancelInlineCreate();
     state.monthCursor.setMonth(state.monthCursor.getMonth() - 1);
     await renderMonth();
   });
 
   $("#month-next").addEventListener("click", async () => {
+    cancelInlineCreate();
     state.monthCursor.setMonth(state.monthCursor.getMonth() + 1);
     await renderMonth();
   });
 
   $("#week-prev").addEventListener("click", async () => {
+    cancelInlineCreate();
     state.weekCursor.setDate(state.weekCursor.getDate() - 7);
     await renderWeek();
   });
 
   $("#week-next").addEventListener("click", async () => {
+    cancelInlineCreate();
     state.weekCursor.setDate(state.weekCursor.getDate() + 7);
     await renderWeek();
   });
@@ -575,10 +595,14 @@ async function saveProtocolFromDialog() {
 /* ── Data refresh ───────────────────────────────────────────────── */
 
 async function refreshAll() {
-  state.protocols = await api("/api/protocols");
-  state.experiments = await api("/api/experiments");
-  if (!Array.isArray(state.protocols)) state.protocols = [];
-  if (!Array.isArray(state.experiments)) state.experiments = [];
+  const [protocols, experiments, standaloneTasks] = await Promise.all([
+    api("/api/protocols"),
+    api("/api/experiments"),
+    api("/api/tasks"),
+  ]);
+  state.protocols = Array.isArray(protocols) ? protocols : [];
+  state.experiments = Array.isArray(experiments) ? experiments : [];
+  state.standaloneTasks = Array.isArray(standaloneTasks) ? standaloneTasks : [];
 
   ensureExperimentColors();
   rebuildTaskContext();
@@ -629,6 +653,177 @@ function rebuildTaskContext() {
       });
     }
   }
+}
+
+/* ── Standalone tasks helpers ───────────────────────────────────── */
+
+function standaloneTasksForDate(dateStr) {
+  return state.standaloneTasks
+    .filter((t) => t.date === dateStr)
+    .sort((a, b) => {
+      // Tasks with time_of_day first, then by created_at
+      if (a.time_of_day && !b.time_of_day) return -1;
+      if (!a.time_of_day && b.time_of_day) return 1;
+      if (a.time_of_day && b.time_of_day) return a.time_of_day.localeCompare(b.time_of_day);
+      return (a.created_at || 0) - (b.created_at || 0);
+    });
+}
+
+function cancelInlineCreate() {
+  if (!state.inlineCreate) return;
+  const el = state.inlineCreate.element;
+  if (el && el.parentNode) el.remove();
+  state.inlineCreate = null;
+}
+
+function beginInlineCreate(date, parentEl) {
+  cancelInlineCreate();
+
+  const card = document.createElement("div");
+  card.className = "inline-create-card";
+  card.addEventListener("click", (e) => e.stopPropagation());
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "inline-create-input";
+  input.placeholder = "New task...";
+  card.appendChild(input);
+  parentEl.appendChild(card);
+
+  state.inlineCreate = { date, element: card };
+
+  input.focus();
+
+  input.addEventListener("keydown", async (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const title = input.value.trim();
+      if (!title) { cancelInlineCreate(); return; }
+      const res = await api("/api/tasks", {
+        method: "POST",
+        body: JSON.stringify({ title, date }),
+      });
+      cancelInlineCreate();
+      if (res.error) { showStatus(res.error, true); return; }
+      await refreshAll();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelInlineCreate();
+    }
+  });
+
+  input.addEventListener("blur", () => {
+    setTimeout(() => {
+      if (state.inlineCreate?.element === card) cancelInlineCreate();
+    }, 150);
+  });
+}
+
+async function toggleStandaloneTaskCompleted(taskId) {
+  const task = state.standaloneTasks.find((t) => t.id === taskId);
+  if (!task) return;
+  await api(`/api/tasks/${taskId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ completed: !task.completed }),
+  });
+  await refreshAll();
+}
+
+async function deleteStandaloneTask(taskId) {
+  await api(`/api/tasks/${taskId}`, { method: "DELETE" });
+  state.expandedTaskId = null;
+  await refreshAll();
+}
+
+async function saveExpandedStandaloneTask(taskId) {
+  const card = document.querySelector(`.standalone-expanded[data-task-id="${taskId}"]`);
+  if (!card) return;
+  const title = card.querySelector(".standalone-edit-title")?.value.trim();
+  const notes = card.querySelector(".standalone-edit-notes")?.value || "";
+  const time_of_day = card.querySelector(".standalone-edit-time")?.value || null;
+  const selectedSwatch = card.querySelector(".color-swatch.selected");
+  const color_tag = selectedSwatch ? parseInt(selectedSwatch.dataset.colorIndex, 10) : null;
+
+  const body = { title, notes, time_of_day: time_of_day || null, color_tag };
+  await api(`/api/tasks/${taskId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+  state.expandedTaskId = null;
+  await refreshAll();
+}
+
+function buildExpandedStandaloneCard(task) {
+  const card = document.createElement("div");
+  card.className = "standalone-expanded";
+  card.dataset.taskId = task.id;
+  card.addEventListener("click", (e) => e.stopPropagation());
+
+  const titleInput = document.createElement("input");
+  titleInput.type = "text";
+  titleInput.className = "standalone-edit-title";
+  titleInput.value = task.title;
+  card.appendChild(titleInput);
+
+  const notesArea = document.createElement("textarea");
+  notesArea.className = "standalone-edit-notes";
+  notesArea.placeholder = "Notes...";
+  notesArea.value = task.notes || "";
+  notesArea.rows = 2;
+  card.appendChild(notesArea);
+
+  const timeInput = document.createElement("input");
+  timeInput.type = "text";
+  timeInput.className = "standalone-edit-time";
+  timeInput.placeholder = "Time (e.g. 09:00)";
+  timeInput.value = task.time_of_day || "";
+  card.appendChild(timeInput);
+
+  // Color swatches
+  const swatchRow = document.createElement("div");
+  swatchRow.className = "color-swatch-row";
+  TASK_TAG_COLORS.forEach((color, i) => {
+    const swatch = document.createElement("span");
+    swatch.className = "color-swatch";
+    swatch.dataset.colorIndex = i;
+    swatch.style.background = color.hex;
+    if (task.color_tag === i) swatch.classList.add("selected");
+    swatch.addEventListener("click", () => {
+      swatchRow.querySelectorAll(".color-swatch").forEach((s) => s.classList.remove("selected"));
+      swatch.classList.add("selected");
+    });
+    swatchRow.appendChild(swatch);
+  });
+  const clearSwatch = document.createElement("span");
+  clearSwatch.className = "clear-swatch";
+  clearSwatch.textContent = "\u00d7";
+  clearSwatch.title = "No color";
+  clearSwatch.addEventListener("click", () => {
+    swatchRow.querySelectorAll(".color-swatch").forEach((s) => s.classList.remove("selected"));
+  });
+  swatchRow.appendChild(clearSwatch);
+  card.appendChild(swatchRow);
+
+  // Actions
+  const actions = document.createElement("div");
+  actions.className = "standalone-expanded-actions";
+
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "btn primary";
+  saveBtn.textContent = "Save";
+  saveBtn.addEventListener("click", () => saveExpandedStandaloneTask(task.id));
+  actions.appendChild(saveBtn);
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "btn danger-btn";
+  deleteBtn.textContent = "Delete";
+  deleteBtn.addEventListener("click", () => deleteStandaloneTask(task.id));
+  actions.appendChild(deleteBtn);
+
+  card.appendChild(actions);
+  return card;
 }
 
 /* ── Rendering: sidebar ─────────────────────────────────────────── */
@@ -756,7 +951,7 @@ function drawMonthGrid() {
 
     drawTaskRows(div, cell, previewByDate.get(cell.date) || []);
 
-    div.addEventListener("click", () => {
+    div.addEventListener("click", (e) => {
       // Touch move: tap destination cell
       if (isTouchInteraction() && state.touchMoveSource) {
         const src = state.touchMoveSource;
@@ -781,6 +976,12 @@ function drawMonthGrid() {
         state.placement.anchorDate = cell.date;
         updatePlacementPanel();
         drawMonthGrid();
+        return;
+      }
+      if (state.pendingMove) return;
+      // Inline create standalone task
+      if (!e.target.closest(".task-row") && !e.target.closest(".standalone-task-row") && !e.target.closest(".inline-create-card") && !e.target.closest(".standalone-expanded")) {
+        beginInlineCreate(cell.date, div);
       }
     });
 
@@ -934,9 +1135,19 @@ function drawTaskRows(cellEl, cell, previews) {
     });
   });
 
+  // 4. Standalone tasks for this date
+  const saTasks = standaloneTasksForDate(cell.date);
+  for (const sa of saTasks) {
+    rows.push({ kind: "standalone", task: sa });
+  }
+
   const visibleRows = rows.slice(0, maxRows);
 
   visibleRows.forEach((row) => {
+    if (row.kind === "standalone") {
+      cellEl.appendChild(buildMonthStandaloneRow(row.task));
+      return;
+    }
     const div = document.createElement("div");
     const classes = ["task-row"];
     if (row.kind === "preview") classes.push("preview");
@@ -1069,6 +1280,57 @@ function drawTaskRows(cellEl, cell, previews) {
     more.textContent = `+${rows.length - maxRows} more`;
     cellEl.appendChild(more);
   }
+}
+
+function buildMonthStandaloneRow(task) {
+  const div = document.createElement("div");
+  div.className = "standalone-task-row";
+  if (task.completed) div.classList.add("completed");
+  div.dataset.standaloneTaskId = task.id;
+  div.addEventListener("click", (e) => e.stopPropagation());
+
+  const colorTag = typeof task.color_tag === "number" && task.color_tag < 8
+    ? TASK_TAG_COLORS[task.color_tag]
+    : null;
+  if (colorTag) div.style.setProperty("--tag-color", colorTag.hex);
+
+  const check = document.createElement("input");
+  check.type = "checkbox";
+  check.className = "standalone-check";
+  check.checked = task.completed;
+  check.addEventListener("change", () => toggleStandaloneTaskCompleted(task.id));
+  div.appendChild(check);
+
+  const title = document.createElement("span");
+  title.className = "standalone-title";
+  title.textContent = task.title;
+  title.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (state.expandedTaskId === task.id) {
+      state.expandedTaskId = null;
+    } else {
+      state.expandedTaskId = task.id;
+    }
+    drawMonthGrid();
+    renderWeek({ skipFetch: true });
+  });
+  div.appendChild(title);
+
+  if (task.time_of_day) {
+    const time = document.createElement("span");
+    time.className = "standalone-time";
+    time.textContent = task.time_of_day;
+    div.appendChild(time);
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.appendChild(div);
+
+  if (state.expandedTaskId === task.id) {
+    wrapper.appendChild(buildExpandedStandaloneCard(task));
+  }
+
+  return wrapper;
 }
 
 /* ── Hover focus (dependency chain highlight) ───────────────────── */
@@ -1277,8 +1539,9 @@ async function renderWeek(options = {}) {
 
 function renderWeekDayContent(wrap, wd) {
   const tasks = wd.tasks || [];
+  const saTasks = standaloneTasksForDate(wd.date);
   const d = new Date(wd.date + "T00:00:00");
-  const taskCount = tasks.length;
+  const taskCount = tasks.length + saTasks.length;
 
   // Header with weekday, date, and task count
   const header = document.createElement("div");
@@ -1291,17 +1554,29 @@ function renderWeekDayContent(wrap, wd) {
   container.className = "week-day-tasks";
   wrap.appendChild(container);
 
-  if (tasks.length === 0) {
+  const sorted = tasks.slice().sort((a, b) => (a.day_priority ?? 0) - (b.day_priority ?? 0));
+  sorted.forEach((task, index) => {
+    container.appendChild(buildWeekTaskCard(task, index));
+  });
+
+  // Standalone tasks
+  saTasks.forEach((sa) => {
+    container.appendChild(buildWeekStandaloneCard(sa));
+  });
+
+  if (taskCount === 0) {
     const empty = document.createElement("div");
     empty.className = "week-day-empty";
     empty.textContent = "No tasks";
     container.appendChild(empty);
-    return;
   }
 
-  const sorted = tasks.slice().sort((a, b) => (a.day_priority ?? 0) - (b.day_priority ?? 0));
-  sorted.forEach((task, index) => {
-    container.appendChild(buildWeekTaskCard(task, index));
+  // Click empty area to inline-create
+  wrap.addEventListener("click", (e) => {
+    if (isTouchInteraction() && state.touchMoveSource) return;
+    if (state.placement || state.pendingMove) return;
+    if (e.target.closest(".week-task") || e.target.closest(".standalone-task-card") || e.target.closest(".inline-create-card") || e.target.closest(".standalone-expanded")) return;
+    beginInlineCreate(wd.date, container);
   });
 }
 
@@ -1440,6 +1715,62 @@ function buildWeekTaskCard(task, index) {
       });
     }
   }
+
+  return card;
+}
+
+function buildWeekStandaloneCard(task) {
+  if (state.expandedTaskId === task.id) {
+    const expanded = buildExpandedStandaloneCard(task);
+    return expanded;
+  }
+
+  const card = document.createElement("div");
+  card.className = "standalone-task-card";
+  if (task.completed) card.classList.add("completed");
+  card.dataset.standaloneTaskId = task.id;
+
+  const colorTag = typeof task.color_tag === "number" && task.color_tag < 8
+    ? TASK_TAG_COLORS[task.color_tag]
+    : null;
+  if (colorTag) {
+    card.style.borderLeftColor = colorTag.hex;
+  }
+
+  const check = document.createElement("input");
+  check.type = "checkbox";
+  check.className = "standalone-check";
+  check.checked = task.completed;
+  check.addEventListener("change", (e) => {
+    e.stopPropagation();
+    toggleStandaloneTaskCompleted(task.id);
+  });
+  check.addEventListener("click", (e) => e.stopPropagation());
+  card.appendChild(check);
+
+  const label = document.createElement("span");
+  label.className = "standalone-label";
+  label.textContent = "Task";
+  card.appendChild(label);
+
+  const title = document.createElement("span");
+  title.className = "standalone-title";
+  title.textContent = task.title;
+  card.appendChild(title);
+
+  if (task.time_of_day) {
+    const time = document.createElement("span");
+    time.className = "standalone-time";
+    time.textContent = task.time_of_day;
+    card.appendChild(time);
+  }
+
+  card.addEventListener("click", (e) => {
+    e.stopPropagation();
+    state.expandedTaskId = task.id;
+    drawMonthGrid();
+    renderWeek({ skipFetch: true });
+  });
 
   return card;
 }

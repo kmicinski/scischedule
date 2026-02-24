@@ -7,6 +7,7 @@ pub type StepId = Uuid;
 pub type DraftId = Uuid;
 pub type ExperimentId = Uuid;
 pub type TaskId = Uuid;
+pub type StandaloneTaskId = Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Protocol {
@@ -133,6 +134,51 @@ pub struct MoveTaskRequest {
 pub struct ReorderTaskRequest {
     pub task_id: TaskId,
     pub new_priority: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StandaloneTask {
+    pub id: StandaloneTaskId,
+    pub title: String,
+    #[serde(default)]
+    pub notes: String,
+    #[serde(default)]
+    pub time_of_day: Option<String>,
+    #[serde(default)]
+    pub color_tag: Option<u8>,
+    pub date: NaiveDate,
+    pub completed: bool,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateStandaloneTaskRequest {
+    pub title: String,
+    pub date: NaiveDate,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub time_of_day: Option<String>,
+    #[serde(default)]
+    pub color_tag: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateStandaloneTaskRequest {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub time_of_day: Option<Option<String>>,
+    #[serde(default)]
+    pub color_tag: Option<Option<u8>>,
+    #[serde(default)]
+    pub date: Option<NaiveDate>,
+    #[serde(default)]
+    pub completed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

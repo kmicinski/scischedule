@@ -7,9 +7,11 @@ use uuid::Uuid;
 use crate::{
     domain::{
         build_month_view, build_week_view, lock_experiment, move_task_with_constraints,
-        reorder_task_for_day, schedule_from_protocol, validate_protocol, CreateProtocolRequest,
-        CreateProtocolStepRequest, Experiment, ExperimentId, MonthView, MoveTaskRequest,
-        PlanExperimentRequest, Protocol, ProtocolId, ProtocolStep, ReorderTaskRequest, WeekView,
+        reorder_task_for_day, schedule_from_protocol, validate_protocol,
+        CreateProtocolRequest, CreateProtocolStepRequest, CreateStandaloneTaskRequest,
+        Experiment, ExperimentId, MonthView, MoveTaskRequest, PlanExperimentRequest,
+        Protocol, ProtocolId, ProtocolStep, ReorderTaskRequest, StandaloneTask,
+        StandaloneTaskId, UpdateStandaloneTaskRequest, WeekView,
     },
     repo::{RepoError, Repository},
 };
@@ -222,6 +224,100 @@ impl<R: Repository> AppService<R> {
     pub fn get_protocol(&self, id: ProtocolId) -> Result<Protocol, ServiceError> {
         self.repo.get_protocol(id).map_err(Into::into)
     }
+
+    pub fn create_standalone_task(
+        &self,
+        req: CreateStandaloneTaskRequest,
+        user: &str,
+    ) -> Result<StandaloneTask, ServiceError> {
+        if let Some(c) = req.color_tag {
+            if c >= 8 {
+                return Err(ServiceError::InvalidProtocolEdit(
+                    "color_tag must be 0–7".to_string(),
+                ));
+            }
+        }
+        let now = Utc::now().timestamp();
+        let task = StandaloneTask {
+            id: Uuid::new_v4(),
+            title: req.title,
+            notes: req.notes.unwrap_or_default(),
+            time_of_day: req.time_of_day,
+            color_tag: req.color_tag,
+            date: req.date,
+            completed: false,
+            created_by: user.to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        self.repo.upsert_standalone_task(&task)?;
+        Ok(task)
+    }
+
+    pub fn update_standalone_task(
+        &self,
+        id: StandaloneTaskId,
+        req: UpdateStandaloneTaskRequest,
+        user: &str,
+    ) -> Result<StandaloneTask, ServiceError> {
+        let mut task = self.repo.get_standalone_task(id)?;
+        if task.created_by != user {
+            return Err(ServiceError::Forbidden);
+        }
+        if let Some(title) = req.title {
+            task.title = title;
+        }
+        if let Some(notes) = req.notes {
+            task.notes = notes;
+        }
+        if let Some(time_of_day) = req.time_of_day {
+            task.time_of_day = time_of_day;
+        }
+        if let Some(color_tag) = req.color_tag {
+            if let Some(c) = color_tag {
+                if c >= 8 {
+                    return Err(ServiceError::InvalidProtocolEdit(
+                        "color_tag must be 0–7".to_string(),
+                    ));
+                }
+            }
+            task.color_tag = color_tag;
+        }
+        if let Some(date) = req.date {
+            task.date = date;
+        }
+        if let Some(completed) = req.completed {
+            task.completed = completed;
+        }
+        task.updated_at = Utc::now().timestamp();
+        self.repo.upsert_standalone_task(&task)?;
+        Ok(task)
+    }
+
+    pub fn list_standalone_tasks(
+        &self,
+        user: &str,
+    ) -> Result<Vec<StandaloneTask>, ServiceError> {
+        Ok(self
+            .repo
+            .list_standalone_tasks()?
+            .into_iter()
+            .filter(|t| t.created_by == user)
+            .collect())
+    }
+
+    pub fn delete_standalone_task(
+        &self,
+        id: StandaloneTaskId,
+        user: &str,
+    ) -> Result<(), ServiceError> {
+        let task = self.repo.get_standalone_task(id)?;
+        if task.created_by != user {
+            return Err(ServiceError::Forbidden);
+        }
+        self.repo.delete_standalone_task(id)?;
+        Ok(())
+    }
 }
 
 fn map_steps(steps: Vec<CreateProtocolStepRequest>) -> Vec<ProtocolStep> {
@@ -273,6 +369,7 @@ mod tests {
     struct MemRepo {
         protocols: Mutex<Vec<Protocol>>,
         experiments: Mutex<Vec<Experiment>>,
+        standalone_tasks: Mutex<Vec<StandaloneTask>>,
     }
 
     impl Repository for MemRepo {
@@ -322,6 +419,36 @@ mod tests {
                 .find(|e| e.id == id)
                 .cloned()
                 .ok_or(RepoError::NotFound)
+        }
+
+        fn upsert_standalone_task(&self, task: &StandaloneTask) -> Result<(), RepoError> {
+            let mut tasks = self.standalone_tasks.lock().unwrap();
+            if let Some(existing) = tasks.iter_mut().find(|t| t.id == task.id) {
+                *existing = task.clone();
+            } else {
+                tasks.push(task.clone());
+            }
+            Ok(())
+        }
+
+        fn list_standalone_tasks(&self) -> Result<Vec<StandaloneTask>, RepoError> {
+            Ok(self.standalone_tasks.lock().unwrap().clone())
+        }
+
+        fn get_standalone_task(&self, id: StandaloneTaskId) -> Result<StandaloneTask, RepoError> {
+            self.standalone_tasks
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|t| t.id == id)
+                .cloned()
+                .ok_or(RepoError::NotFound)
+        }
+
+        fn delete_standalone_task(&self, id: StandaloneTaskId) -> Result<(), RepoError> {
+            let mut tasks = self.standalone_tasks.lock().unwrap();
+            tasks.retain(|t| t.id != id);
+            Ok(())
         }
     }
 

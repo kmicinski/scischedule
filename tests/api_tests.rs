@@ -663,3 +663,263 @@ async fn user_cannot_lock_other_users_experiment() {
 
     assert_eq!(lock.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn create_and_list_standalone_tasks() {
+    let app = app();
+
+    let create_body = serde_json::json!({
+        "title": "Pick up reagents",
+        "date": "2026-03-10"
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tasks")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(create.status(), StatusCode::OK);
+    let create_bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let task: serde_json::Value = serde_json::from_slice(&create_bytes).unwrap();
+    assert_eq!(task["title"], "Pick up reagents");
+    assert_eq!(task["date"], "2026-03-10");
+    assert_eq!(task["completed"], false);
+    assert_eq!(task["created_by"], "alice");
+
+    let list = app
+        .oneshot(
+            authed(Request::builder().uri("/api/tasks"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(list.status(), StatusCode::OK);
+    let bytes = list.into_body().collect().await.unwrap().to_bytes();
+    let tasks: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["title"], "Pick up reagents");
+}
+
+#[tokio::test]
+async fn update_standalone_task() {
+    let app = app();
+
+    let create_body = serde_json::json!({
+        "title": "Lab meeting",
+        "date": "2026-03-12"
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tasks")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let create_bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let task: serde_json::Value = serde_json::from_slice(&create_bytes).unwrap();
+    let task_id = task["id"].as_str().unwrap();
+
+    let update_body = serde_json::json!({
+        "title": "Lab meeting (moved)",
+        "completed": true
+    });
+
+    let update = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/tasks/{task_id}"))
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(update_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(update.status(), StatusCode::OK);
+    let bytes = update.into_body().collect().await.unwrap().to_bytes();
+    let updated: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(updated["title"], "Lab meeting (moved)");
+    assert_eq!(updated["completed"], true);
+}
+
+#[tokio::test]
+async fn delete_standalone_task() {
+    let app = app();
+
+    let create_body = serde_json::json!({
+        "title": "Dispose waste",
+        "date": "2026-03-15"
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tasks")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let create_bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let task: serde_json::Value = serde_json::from_slice(&create_bytes).unwrap();
+    let task_id = task["id"].as_str().unwrap();
+
+    let delete = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/tasks/{task_id}")),
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+
+    let list = app
+        .oneshot(
+            authed(Request::builder().uri("/api/tasks"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let bytes = list.into_body().collect().await.unwrap().to_bytes();
+    let tasks: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(tasks.len(), 0);
+}
+
+#[tokio::test]
+async fn standalone_task_user_isolation() {
+    let app = app();
+
+    // Alice creates a task
+    let create_body = serde_json::json!({
+        "title": "Alice's task",
+        "date": "2026-03-20"
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tasks")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let create_bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let task: serde_json::Value = serde_json::from_slice(&create_bytes).unwrap();
+    let task_id = task["id"].as_str().unwrap();
+
+    // Bob can't see Alice's task
+    let bob_list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/tasks")
+                .header("Remote-User", "bob")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let bytes = bob_list.into_body().collect().await.unwrap().to_bytes();
+    let bob_tasks: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(bob_tasks.len(), 0);
+
+    // Bob can't modify Alice's task
+    let bob_update = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/tasks/{task_id}"))
+                .header("Remote-User", "bob")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"title": "hacked"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(bob_update.status(), StatusCode::FORBIDDEN);
+
+    // Bob can't delete Alice's task
+    let bob_delete = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/tasks/{task_id}"))
+                .header("Remote-User", "bob")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(bob_delete.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn standalone_task_missing_auth() {
+    let app = app();
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/tasks")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}

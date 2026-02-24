@@ -13,7 +13,10 @@ use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 use uuid::Uuid;
 
 use crate::{
-    domain::{CreateProtocolRequest, MoveTaskRequest, PlanExperimentRequest, ReorderTaskRequest},
+    domain::{
+        CreateProtocolRequest, CreateStandaloneTaskRequest, MoveTaskRequest,
+        PlanExperimentRequest, ReorderTaskRequest, UpdateStandaloneTaskRequest,
+    },
     repo::SledRepo,
     service::{AppService, ServiceError},
 };
@@ -33,6 +36,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/experiments/:id/lock", post(lock_experiment))
         .route("/api/experiments/:id/tasks/move", patch(move_task))
         .route("/api/experiments/:id/tasks/reorder", patch(reorder_task))
+        .route(
+            "/api/tasks",
+            get(list_standalone_tasks).post(create_standalone_task),
+        )
+        .route(
+            "/api/tasks/:id",
+            patch(update_standalone_task).delete(delete_standalone_task),
+        )
         .route("/api/views/month", get(month_view))
         .route("/api/views/week", get(week_view))
         .nest_service("/static", ServeDir::new("static"))
@@ -145,6 +156,41 @@ async fn reorder_task(
     Json(req): Json<ReorderTaskRequest>,
 ) -> Result<Json<crate::domain::Experiment>, ApiError> {
     Ok(Json(service.reorder_task(id, req, &user.username)?))
+}
+
+async fn create_standalone_task(
+    State(service): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<CreateStandaloneTaskRequest>,
+) -> Result<Json<crate::domain::StandaloneTask>, ApiError> {
+    Ok(Json(service.create_standalone_task(req, &user.username)?))
+}
+
+async fn list_standalone_tasks(
+    State(service): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<Vec<crate::domain::StandaloneTask>>, ApiError> {
+    Ok(Json(service.list_standalone_tasks(&user.username)?))
+}
+
+async fn update_standalone_task(
+    State(service): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateStandaloneTaskRequest>,
+) -> Result<Json<crate::domain::StandaloneTask>, ApiError> {
+    Ok(Json(
+        service.update_standalone_task(id, req, &user.username)?,
+    ))
+}
+
+async fn delete_standalone_task(
+    State(service): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    service.delete_standalone_task(id, &user.username)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Deserialize)]

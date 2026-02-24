@@ -2,7 +2,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::domain::{Experiment, ExperimentId, Protocol, ProtocolId};
+use crate::domain::{Experiment, ExperimentId, Protocol, ProtocolId, StandaloneTask, StandaloneTaskId};
 
 #[derive(Debug, Error)]
 pub enum RepoError {
@@ -20,6 +20,11 @@ pub trait Repository: Send + Sync + 'static {
     fn upsert_experiment(&self, experiment: &Experiment) -> Result<(), RepoError>;
     fn list_experiments(&self) -> Result<Vec<Experiment>, RepoError>;
     fn get_experiment(&self, id: ExperimentId) -> Result<Experiment, RepoError>;
+
+    fn upsert_standalone_task(&self, task: &StandaloneTask) -> Result<(), RepoError>;
+    fn list_standalone_tasks(&self) -> Result<Vec<StandaloneTask>, RepoError>;
+    fn get_standalone_task(&self, id: StandaloneTaskId) -> Result<StandaloneTask, RepoError>;
+    fn delete_standalone_task(&self, id: StandaloneTaskId) -> Result<(), RepoError>;
 }
 
 pub struct SledRepo {
@@ -38,6 +43,10 @@ impl SledRepo {
 
     fn key_experiment(id: ExperimentId) -> String {
         format!("experiment:{id}")
+    }
+
+    fn key_standalone_task(id: StandaloneTaskId) -> String {
+        format!("standalone_task:{id}")
     }
 }
 
@@ -113,6 +122,51 @@ impl Repository for SledRepo {
             .ok_or(RepoError::NotFound)?;
 
         serde_json::from_slice(&value).map_err(|e| RepoError::Storage(e.to_string()))
+    }
+
+    fn upsert_standalone_task(&self, task: &StandaloneTask) -> Result<(), RepoError> {
+        let key = Self::key_standalone_task(task.id);
+        let value = serde_json::to_vec(task).map_err(|e| RepoError::Storage(e.to_string()))?;
+        self.db
+            .insert(key.as_bytes(), value)
+            .map_err(|e| RepoError::Storage(e.to_string()))?;
+        self.db
+            .flush()
+            .map_err(|e| RepoError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_standalone_tasks(&self) -> Result<Vec<StandaloneTask>, RepoError> {
+        let mut out = Vec::new();
+        for item in self.db.scan_prefix("standalone_task:") {
+            let (_, value) = item.map_err(|e| RepoError::Storage(e.to_string()))?;
+            let task: StandaloneTask =
+                serde_json::from_slice(&value).map_err(|e| RepoError::Storage(e.to_string()))?;
+            out.push(task);
+        }
+        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(out)
+    }
+
+    fn get_standalone_task(&self, id: StandaloneTaskId) -> Result<StandaloneTask, RepoError> {
+        let key = Self::key_standalone_task(id);
+        let value = self
+            .db
+            .get(key.as_bytes())
+            .map_err(|e| RepoError::Storage(e.to_string()))?
+            .ok_or(RepoError::NotFound)?;
+        serde_json::from_slice(&value).map_err(|e| RepoError::Storage(e.to_string()))
+    }
+
+    fn delete_standalone_task(&self, id: StandaloneTaskId) -> Result<(), RepoError> {
+        let key = Self::key_standalone_task(id);
+        self.db
+            .remove(key.as_bytes())
+            .map_err(|e| RepoError::Storage(e.to_string()))?;
+        self.db
+            .flush()
+            .map_err(|e| RepoError::Storage(e.to_string()))?;
+        Ok(())
     }
 }
 
