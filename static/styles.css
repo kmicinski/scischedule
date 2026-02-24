@@ -929,6 +929,47 @@ body.drag-task-active .task-row {
   cursor: default;
 }
 
+/* Editable step name affordance */
+.editable-step {
+  cursor: text;
+  border-radius: 2px;
+  transition: background 0.15s;
+}
+.editable-step:hover {
+  background: rgba(12, 95, 90, 0.06);
+}
+
+.rename-icon {
+  opacity: 0;
+  font-size: 0.7em;
+  margin-left: 0.3em;
+  cursor: pointer;
+  color: var(--muted, #5a7a76);
+  transition: opacity 0.15s;
+  vertical-align: middle;
+}
+.task-row:hover .rename-icon,
+.week-task:hover .rename-icon {
+  opacity: 0.5;
+}
+.rename-icon:hover {
+  opacity: 1 !important;
+}
+
+/* Month view inline edit */
+.task-row .inline-step-edit {
+  width: 100%;
+  font-size: inherit;
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  padding: 0 3px;
+  background: #fff;
+  outline: none;
+  box-sizing: border-box;
+  box-shadow: 0 0 0 2px rgba(12, 95, 90, 0.12);
+}
+
 .inline-step-edit {
   width: 100%;
   font-size: inherit;

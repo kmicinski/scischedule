@@ -1545,10 +1545,32 @@ function drawTaskRows(cellEl, cell, previews) {
       div.innerHTML = `
         <div class="task-row-main">
           ${row.kind === "task" ? '<span class="drag-handle" title="Drag to move">::</span>' : ""}
-          <div class="task-row-text">${escapeHtml(row.text)}</div>
+          <div class="task-row-text${row.kind === "task" ? " editable-step" : ""}" ${row.kind === "task" ? 'title="Double-click to rename"' : ""}>${escapeHtml(row.text)}</div>
+          ${row.kind === "task" && !isTouchInteraction() ? '<span class="rename-icon" title="Rename step">&#9998;</span>' : ""}
           ${row.movingAway ? '<span class="moving-away-badge" title="Will shift when confirmed">&rarr;</span>' : ""}
         </div>
       `;
+    }
+
+    // Double-click or pencil-click to rename step in month view
+    if (row.kind === "task" && !row.movingAway) {
+      const textEl = div.querySelector(".task-row-text");
+      const pencilEl = div.querySelector(".rename-icon");
+      const ctx = state.taskContext.get(row.task.id);
+      if (textEl && ctx) {
+        if (!isTouchInteraction()) {
+          textEl.addEventListener("dblclick", (e) => {
+            e.stopPropagation();
+            beginInlineStepEdit(textEl, row.task, ctx);
+          });
+        }
+        if (pencilEl) {
+          pencilEl.addEventListener("click", (e) => {
+            e.stopPropagation();
+            beginInlineStepEdit(textEl, row.task, ctx);
+          });
+        }
+      }
     }
 
     // Real tasks: draggable (unless moving away in a staged move)
@@ -2187,7 +2209,7 @@ function buildWeekTaskCard(task, index) {
       <span class="week-task-priority">${index + 1}</span>
     </div>
     <div class="week-task-body">
-      <div class="week-task-step" style="font-weight:700">${escapeHtml(stepName)}</div>
+      <div class="week-task-step editable-step" style="font-weight:700" title="Double-click to rename">${escapeHtml(stepName)}${!isTouchInteraction() ? '<span class="rename-icon">&#9998;</span>' : ""}</div>
       <div class="week-task-status-line">${statusHtml}</div>
     </div>
     <div class="week-task-actions">
@@ -2223,7 +2245,7 @@ function buildWeekTaskCard(task, index) {
       });
     }
 
-    // Double-click to rename step (desktop only)
+    // Double-click or pencil-click to rename step
     if (!isTouchInteraction()) {
       const stepEl = card.querySelector(".week-task-step");
       if (stepEl) {
@@ -2231,6 +2253,13 @@ function buildWeekTaskCard(task, index) {
           e.stopPropagation();
           beginInlineStepEdit(stepEl, task, ctx);
         });
+        const pencilEl = stepEl.querySelector(".rename-icon");
+        if (pencilEl) {
+          pencilEl.addEventListener("click", (e) => {
+            e.stopPropagation();
+            beginInlineStepEdit(stepEl, task, ctx);
+          });
+        }
       }
     }
   }
