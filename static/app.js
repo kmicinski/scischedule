@@ -1848,14 +1848,28 @@ function renderWeekDayContent(wrap, wd, weekView) {
   container.className = "week-day-tasks";
   wrap.appendChild(container);
 
-  const sorted = tasks.slice().sort((a, b) => (a.day_priority ?? 0) - (b.day_priority ?? 0));
-  sorted.forEach((task, index) => {
-    container.appendChild(buildWeekTaskCard(task, index));
+  // Merge experiment tasks and standalone tasks into a single sorted list
+  const allItems = [];
+  for (const task of tasks) {
+    allItems.push({ kind: "experiment", task, order: task.day_priority ?? 0 });
+  }
+  for (const sa of saTasks) {
+    allItems.push({ kind: "standalone", task: sa, order: sa.sort_order ?? 0 });
+  }
+  allItems.sort((a, b) => {
+    if (a.order !== b.order) return a.order - b.order;
+    // Tiebreak: experiments before standalone, then by created_at
+    if (a.kind !== b.kind) return a.kind === "experiment" ? -1 : 1;
+    return (a.task.created_at || 0) - (b.task.created_at || 0);
   });
 
-  // Standalone tasks
-  saTasks.forEach((sa) => {
-    container.appendChild(buildWeekStandaloneCard(sa, weekView));
+  let expIndex = 0;
+  allItems.forEach((item) => {
+    if (item.kind === "experiment") {
+      container.appendChild(buildWeekTaskCard(item.task, expIndex++));
+    } else {
+      container.appendChild(buildWeekStandaloneCard(item.task, weekView));
+    }
   });
 
   if (taskCount === 0) {
@@ -2009,19 +2023,20 @@ function buildWeekTaskCard(task, index) {
     }
   });
 
-  // Intra-day reorder: dragover/drop on card
+  // Intra-day reorder: dragover/drop on card (accepts experiment & standalone drags)
   card.addEventListener("dragover", (e) => {
     if (state.pendingMove) return;
     const drag = readDragPayload(e.dataTransfer);
-    const draggingTaskId = drag?.kind === "task" ? drag.taskId : "";
-    const draggingExperimentId =
-      drag?.kind === "task" ? resolveTaskExperimentId(draggingTaskId, drag.experimentId) : "";
-    const draggingCtx = state.taskContext.get(draggingTaskId);
-    if (!draggingTaskId || !draggingCtx) return;
-    const sameDay = draggingCtx.task.date === task.date;
-    const sameExperiment = draggingExperimentId === expId;
-    if (!sameDay || !sameExperiment) return;
+    if (!drag) return;
+    if (drag.kind === "task") {
+      const draggingCtx = state.taskContext.get(drag.taskId);
+      if (!draggingCtx || draggingCtx.task.date !== task.date) return;
+    } else if (drag.kind === "standalone") {
+      if (!drag.taskId || drag.taskId === task.id) return;
+    } else return;
     e.preventDefault();
+    e.stopPropagation();
+    card.classList.remove("drop-before", "drop-after");
     card.classList.add(e.offsetY < card.clientHeight / 2 ? "drop-before" : "drop-after");
   });
 
@@ -2030,22 +2045,28 @@ function buildWeekTaskCard(task, index) {
   card.addEventListener("drop", async (e) => {
     if (state.pendingMove) return;
     e.preventDefault();
+    e.stopPropagation();
     card.classList.remove("drop-before", "drop-after");
     const drag = readDragPayload(e.dataTransfer);
-    const draggingTaskId = drag?.kind === "task" ? drag.taskId : "";
-    const draggingExperimentId =
-      drag?.kind === "task" ? resolveTaskExperimentId(draggingTaskId, drag.experimentId) : "";
-    if (!draggingTaskId || !draggingExperimentId || draggingTaskId === task.id) return;
-    const draggingCtx = state.taskContext.get(draggingTaskId);
-    if (!draggingCtx) return;
-    const sameDay = draggingCtx.task.date === task.date;
-    const sameExperiment = draggingExperimentId === expId;
-    if (!sameDay || !sameExperiment) return;
-
+    if (!drag) return;
     const insertBefore = e.offsetY < card.clientHeight / 2;
-    const nextPriority = insertBefore ? task.day_priority - 1 : task.day_priority + 1;
-    await reorderTask(expId, draggingTaskId, nextPriority);
-    clearActiveDrag();
+    const targetOrder = task.day_priority ?? 0;
+    const newOrder = insertBefore ? targetOrder - 1 : targetOrder + 1;
+
+    if (drag.kind === "task" && drag.taskId && drag.taskId !== task.id) {
+      const draggingCtx = state.taskContext.get(drag.taskId);
+      if (!draggingCtx || draggingCtx.task.date !== task.date) return;
+      const dragExpId = resolveTaskExperimentId(drag.taskId, drag.experimentId);
+      clearActiveDrag();
+      await reorderTask(dragExpId, drag.taskId, newOrder);
+    } else if (drag.kind === "standalone" && drag.taskId) {
+      await api(`/api/tasks/${drag.taskId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ sort_order: newOrder }),
+      });
+      clearActiveDrag();
+      await refreshAll();
+    }
   });
 
   // Build card content
@@ -2172,15 +2193,19 @@ function buildWeekStandaloneCard(task, weekView) {
   });
   card.appendChild(delBtn);
 
-  // Intra-column reorder: dragover/drop on standalone card
+  // Intra-column reorder: dragover/drop on standalone card (accepts experiment & standalone drags)
   card.addEventListener("dragover", (e) => {
     const drag = readDragPayload(e.dataTransfer);
-    if (drag?.kind === "standalone" && drag.taskId && drag.taskId !== task.id) {
-      e.preventDefault();
-      e.stopPropagation();
-      card.classList.remove("drop-before", "drop-after");
-      card.classList.add(e.offsetY < card.clientHeight / 2 ? "drop-before" : "drop-after");
-    }
+    if (!drag) return;
+    if (drag.kind === "standalone" && drag.taskId && drag.taskId !== task.id) {
+      // ok
+    } else if (drag.kind === "task" && drag.taskId) {
+      // ok — experiment task dropping onto standalone
+    } else return;
+    e.preventDefault();
+    e.stopPropagation();
+    card.classList.remove("drop-before", "drop-after");
+    card.classList.add(e.offsetY < card.clientHeight / 2 ? "drop-before" : "drop-after");
   });
   card.addEventListener("dragleave", () => card.classList.remove("drop-before", "drop-after"));
   card.addEventListener("drop", async (e) => {
@@ -2188,10 +2213,12 @@ function buildWeekStandaloneCard(task, weekView) {
     e.stopPropagation();
     card.classList.remove("drop-before", "drop-after");
     const drag = readDragPayload(e.dataTransfer);
-    if (drag?.kind === "standalone" && drag.taskId && drag.taskId !== task.id) {
-      const insertBefore = e.offsetY < card.clientHeight / 2;
-      const newOrder = insertBefore ? (task.sort_order || 0) - 1 : (task.sort_order || 0) + 1;
-      // Also move dragged task to same date group as target
+    if (!drag) return;
+    const insertBefore = e.offsetY < card.clientHeight / 2;
+    const targetOrder = task.sort_order ?? 0;
+    const newOrder = insertBefore ? targetOrder - 1 : targetOrder + 1;
+
+    if (drag.kind === "standalone" && drag.taskId && drag.taskId !== task.id) {
       const body = { sort_order: newOrder };
       if (task.date) body.date = task.date;
       else body.date = null;
@@ -2201,6 +2228,10 @@ function buildWeekStandaloneCard(task, weekView) {
       });
       clearActiveDrag();
       await refreshAll();
+    } else if (drag.kind === "task" && drag.taskId) {
+      const dragExpId = resolveTaskExperimentId(drag.taskId, drag.experimentId);
+      clearActiveDrag();
+      await reorderTask(dragExpId, drag.taskId, newOrder);
     }
   });
 
