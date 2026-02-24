@@ -139,6 +139,19 @@ h2 {
   gap: 0.4rem;
 }
 
+.experiment-visibility-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 0.7rem;
+  line-height: 1;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.experiment-visibility-btn:hover { color: var(--text); }
+.experiment-item.hidden-experiment { opacity: 0.45; }
+
 .experiment-color-dot {
   width: 9px;
   height: 9px;
@@ -1810,6 +1823,14 @@ select {
 
 .standalone-task-card[draggable="true"]:active {
   cursor: grabbing;
+}
+
+.standalone-task-card.drop-before {
+  box-shadow: 0 -2px 0 0 var(--accent);
+}
+
+.standalone-task-card.drop-after {
+  box-shadow: 0 2px 0 0 var(--accent);
 }
 
 /* Inline create */

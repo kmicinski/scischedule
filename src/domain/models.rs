@@ -150,6 +150,8 @@ pub struct StandaloneTask {
     pub color_tag: Option<u8>,
     pub date: Option<NaiveDate>,
     pub completed: bool,
+    #[serde(default)]
+    pub sort_order: i32,
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -182,6 +184,8 @@ pub struct UpdateStandaloneTaskRequest {
     pub date: Option<Option<NaiveDate>>,
     #[serde(default)]
     pub completed: Option<bool>,
+    #[serde(default)]
+    pub sort_order: Option<i32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

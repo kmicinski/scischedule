@@ -303,6 +303,7 @@ impl<R: Repository> AppService<R> {
             color_tag: req.color_tag,
             date: req.date,
             completed: false,
+            sort_order: 0,
             created_by: user.to_string(),
             created_at: now,
             updated_at: now,
@@ -345,6 +346,9 @@ impl<R: Repository> AppService<R> {
         }
         if let Some(completed) = req.completed {
             task.completed = completed;
+        }
+        if let Some(sort_order) = req.sort_order {
+            task.sort_order = sort_order;
         }
         task.updated_at = Utc::now().timestamp();
         self.repo.upsert_standalone_task(&task)?;

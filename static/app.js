@@ -54,6 +54,7 @@ const state = {
   touchPlaceProtocol: null,
   inlineCreate: null,
   expandedTaskId: null,
+  hiddenExperimentIds: new Set(),
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -791,17 +792,21 @@ function rebuildTaskContext() {
 function standaloneTasksUnassigned() {
   return state.standaloneTasks
     .filter((t) => !t.date)
-    .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+    .sort((a, b) => {
+      const oa = a.sort_order || 0;
+      const ob = b.sort_order || 0;
+      if (oa !== ob) return oa - ob;
+      return (a.created_at || 0) - (b.created_at || 0);
+    });
 }
 
 function standaloneTasksForDate(dateStr) {
   return state.standaloneTasks
     .filter((t) => t.date && t.date === dateStr)
     .sort((a, b) => {
-      // Tasks with time_of_day first, then by created_at
-      if (a.time_of_day && !b.time_of_day) return -1;
-      if (!a.time_of_day && b.time_of_day) return 1;
-      if (a.time_of_day && b.time_of_day) return a.time_of_day.localeCompare(b.time_of_day);
+      const oa = a.sort_order || 0;
+      const ob = b.sort_order || 0;
+      if (oa !== ob) return oa - ob;
       return (a.created_at || 0) - (b.created_at || 0);
     });
 }
@@ -1106,14 +1111,30 @@ function renderExperiments() {
     const metaParts = [`${taskCount} tasks`];
     if (deviationCount > 0) metaParts.push(`${deviationCount} deviated`);
 
+    const isHidden = state.hiddenExperimentIds.has(exp.id);
+    if (isHidden) li.classList.add("hidden-experiment");
+
     li.innerHTML = `
       <div class="experiment-item-header">
+        <button class="experiment-visibility-btn" title="${isHidden ? "Show" : "Hide"} on calendar">${isHidden ? "&#9711;" : "&#9679;"}</button>
         <span class="experiment-color-dot" style="background:${experimentColor(exp.id)}"></span>
         <span class="experiment-item-name">${escapeHtml(exp.protocol_name)}</span>
         <span class="experiment-status-badge ${statusClass}">${escapeHtml(exp.status)}</span>
       </div>
       <div class="experiment-item-meta">${escapeHtml(metaParts.join(" · "))} · ${escapeHtml(exp.created_by)}</div>
     `;
+
+    li.querySelector(".experiment-visibility-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (state.hiddenExperimentIds.has(exp.id)) {
+        state.hiddenExperimentIds.delete(exp.id);
+      } else {
+        state.hiddenExperimentIds.add(exp.id);
+      }
+      renderExperiments();
+      drawMonthGrid();
+      renderWeek({ skipFetch: true });
+    });
 
     li.addEventListener("click", () => {
       if (state.selectedExperimentId === exp.id) {
@@ -1326,6 +1347,7 @@ function drawTaskRows(cellEl, cell, previews) {
   for (const task of sorted) {
     const ctx = state.taskContext.get(task.id);
     if (!ctx) continue;
+    if (state.hiddenExperimentIds.has(ctx.experimentId)) continue;
 
     const isMovingAway =
       pending &&
@@ -1345,7 +1367,7 @@ function drawTaskRows(cellEl, cell, previews) {
   }
 
   // 2. Ghost rows — tasks projected to arrive at this cell's date
-  if (pending && shiftedStepIds) {
+  if (pending && shiftedStepIds && !state.hiddenExperimentIds.has(pending.experimentId)) {
     const exp = state.experiments.find((e) => e.id === pending.experimentId);
     if (exp) {
       for (const task of exp.tasks) {
@@ -1536,17 +1558,6 @@ function buildMonthStandaloneRow(task) {
     ? TASK_TAG_COLORS[task.color_tag]
     : null;
   if (colorTag) div.style.setProperty("--tag-color", colorTag.hex);
-
-  const checkWrap = document.createElement("label");
-  checkWrap.className = "standalone-check-wrap";
-  checkWrap.addEventListener("click", (e) => e.stopPropagation());
-  const check = document.createElement("input");
-  check.type = "checkbox";
-  check.className = "standalone-check";
-  check.checked = task.completed;
-  check.addEventListener("change", () => toggleStandaloneTaskCompleted(task.id));
-  checkWrap.appendChild(check);
-  div.appendChild(checkWrap);
 
   const title = document.createElement("span");
   title.className = "standalone-title";
@@ -1817,7 +1828,10 @@ async function renderWeek(options = {}) {
 }
 
 function renderWeekDayContent(wrap, wd, weekView) {
-  const tasks = wd.tasks || [];
+  const tasks = (wd.tasks || []).filter((t) => {
+    const ctx = state.taskContext.get(t.id);
+    return !ctx || !state.hiddenExperimentIds.has(ctx.experimentId);
+  });
   const saTasks = standaloneTasksForDate(wd.date);
   const d = new Date(wd.date + "T00:00:00");
   const taskCount = tasks.length + saTasks.length;
@@ -2156,6 +2170,38 @@ function buildWeekStandaloneCard(task, weekView) {
     if (confirm("Delete this task?")) deleteStandaloneTask(task.id);
   });
   card.appendChild(delBtn);
+
+  // Intra-column reorder: dragover/drop on standalone card
+  card.addEventListener("dragover", (e) => {
+    const drag = readDragPayload(e.dataTransfer);
+    if (drag?.kind === "standalone" && drag.taskId && drag.taskId !== task.id) {
+      e.preventDefault();
+      e.stopPropagation();
+      card.classList.remove("drop-before", "drop-after");
+      card.classList.add(e.offsetY < card.clientHeight / 2 ? "drop-before" : "drop-after");
+    }
+  });
+  card.addEventListener("dragleave", () => card.classList.remove("drop-before", "drop-after"));
+  card.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    card.classList.remove("drop-before", "drop-after");
+    const drag = readDragPayload(e.dataTransfer);
+    if (drag?.kind === "standalone" && drag.taskId && drag.taskId !== task.id) {
+      const insertBefore = e.offsetY < card.clientHeight / 2;
+      const newOrder = insertBefore ? (task.sort_order || 0) - 1 : (task.sort_order || 0) + 1;
+      // Also move dragged task to same date group as target
+      const body = { sort_order: newOrder };
+      if (task.date) body.date = task.date;
+      else body.date = null;
+      await api(`/api/tasks/${drag.taskId}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+      clearActiveDrag();
+      await refreshAll();
+    }
+  });
 
   card.addEventListener("click", (e) => {
     if (e.target.closest(".standalone-check-wrap") || e.target.closest(".standalone-delete-x")) return;
