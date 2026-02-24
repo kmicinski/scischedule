@@ -241,6 +241,7 @@ function bindUi() {
   $("#new-protocol-btn-top").addEventListener("click", openNewProtocol);
   $("#cancel-protocol").addEventListener("click", () => protocolDialog.close());
   $("#add-step").addEventListener("click", () => addStepCard());
+  $("#add-prep-step").addEventListener("click", () => addPrepStepCard());
 
   protocolForm.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -329,12 +330,12 @@ function openProtocolDialogForEdit(protocolId) {
   const cards = Array.from(container.querySelectorAll(".step-card"));
   const indexByStepId = new Map(steps.map((step, idx) => [step.id, idx]));
 
+  // First pass: set names, details, parent indexes
   steps.forEach((step, idx) => {
     const card = cards[idx];
     if (!card) return;
     card.querySelector(".step-name").value = step.name || "";
     card.querySelector(".step-details").value = step.details || "";
-    card.querySelector(".step-offset").value = String(step.default_offset_days ?? 0);
 
     const pids = parentStepIds(step);
     const parentIdxs = pids
@@ -343,18 +344,72 @@ function openProtocolDialogForEdit(protocolId) {
     card.dataset.parentIndexes = JSON.stringify(parentIdxs);
   });
 
+  // Second pass: compute Day numbers from offsets by walking the DAG
+  const dayNumbers = new Array(steps.length).fill(1);
+  const computed = new Set();
+  function computeDay(i) {
+    if (computed.has(i)) return dayNumbers[i];
+    computed.add(i);
+    const pis = JSON.parse(cards[i].dataset.parentIndexes || "[]");
+    if (pis.length === 0) {
+      dayNumbers[i] = (steps[i].default_offset_days ?? 0) + 1;
+    } else {
+      const maxParentDay = Math.max(...pis.map((p) => computeDay(p)));
+      dayNumbers[i] = maxParentDay + (steps[i].default_offset_days ?? 0);
+    }
+    return dayNumbers[i];
+  }
+  for (let i = 0; i < steps.length; i++) computeDay(i);
+
+  // Apply computed Day numbers to inputs
+  steps.forEach((_, idx) => {
+    const card = cards[idx];
+    if (!card) return;
+    card.querySelector(".step-day").value = String(dayNumbers[idx]);
+  });
+
   refreshAllStepCards();
   protocolDialog.showModal();
 }
 
-function addStepCard() {
+function addPrepStepCard() {
   const container = $("#steps-container");
-  container.insertAdjacentHTML(
-    "beforeend",
-    `<div class="step-card" data-parent-indexes="[]">
+  const cards = Array.from(container.querySelectorAll(".step-card"));
+
+  // Find the lowest existing day value among prep steps (negative days)
+  let lowestPrepDay = 0;
+  for (const c of cards) {
+    const d = parseInt(c.querySelector(".step-day")?.value || "1", 10);
+    if (d < lowestPrepDay) lowestPrepDay = d;
+  }
+  const newDay = lowestPrepDay - 1;
+
+  // Insert at the top of the container as a root step (no parents)
+  addStepCard({ day: newDay, parentIndexes: [], prepend: true });
+
+  // Scroll to top of steps
+  container.firstElementChild?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function addStepCard(opts) {
+  const container = $("#steps-container");
+  const cards = Array.from(container.querySelectorAll(".step-card"));
+  const prevCard = cards.length > 0 ? cards[cards.length - 1] : null;
+  const prevDay = prevCard ? parseInt(prevCard.querySelector(".step-day")?.value || "1", 10) : 0;
+  const defaultDay = opts?.day ?? prevDay + 1;
+  const defaultName = opts?.name ?? "";
+  const defaultDetails = opts?.details ?? "";
+
+  const prevIndex = cards.length > 0 ? cards.length - 1 : -1;
+  const defaultParents = opts?.parentIndexes ?? (prevIndex >= 0 ? [prevIndex] : []);
+
+  const prepend = opts?.prepend === true;
+  const cardHtml = `<div class="step-card" data-parent-indexes="${escapeHtml(JSON.stringify(defaultParents))}">
       <div class="step-card-header">
-        <span class="step-badge">1</span>
+        <span class="step-day-badge">${defaultDay}</span>
         <input class="step-name" placeholder="Step name" required />
+        <input class="step-day" type="number" value="${defaultDay}" class="step-day-input-hidden" />
+        <button type="button" class="step-repeat-btn" title="Repeat this step">&#x21bb;</button>
         <button type="button" class="step-delete-btn" title="Remove step">\u00d7</button>
       </div>
       <input class="step-details" placeholder="Details / instructions (optional)" />
@@ -366,18 +421,36 @@ function addStepCard() {
             <option value="">+ dependency</option>
           </select>
         </div>
-        <label class="step-offset-field">
-          <span>Offset</span>
-          <input class="step-offset" type="number" value="0" min="0" />
-          <span>days</span>
-        </label>
       </div>
-    </div>`,
-  );
-  const insertedCard = container.lastElementChild;
+    </div>`;
+
+  if (prepend) {
+    // Shift all existing parent indexes up by 1
+    cards.forEach((c) => {
+      let parents = JSON.parse(c.dataset.parentIndexes || "[]");
+      parents = parents.map((p) => p + 1);
+      c.dataset.parentIndexes = JSON.stringify(parents);
+    });
+    container.insertAdjacentHTML("afterbegin", cardHtml);
+  } else {
+    container.insertAdjacentHTML("beforeend", cardHtml);
+  }
+  const insertedCard = prepend ? container.firstElementChild : container.lastElementChild;
+
+  if (defaultName) insertedCard.querySelector(".step-name").value = defaultName;
+  if (defaultDetails) insertedCard.querySelector(".step-details").value = defaultDetails;
 
   insertedCard.querySelector(".step-delete-btn").addEventListener("click", () => {
     removeStepCard(insertedCard);
+  });
+
+  insertedCard.querySelector(".step-repeat-btn").addEventListener("click", () => {
+    const myName = insertedCard.querySelector(".step-name").value;
+    const myDetails = insertedCard.querySelector(".step-details").value;
+    const myDayVal = parseInt(insertedCard.querySelector(".step-day").value || "1", 10);
+    addStepCard({ name: myName, details: myDetails, day: myDayVal + 1 });
+    // Scroll the new card into view
+    container.lastElementChild.scrollIntoView({ behavior: "smooth", block: "nearest" });
   });
 
   insertedCard.querySelector(".step-dep-add").addEventListener("change", function () {
@@ -397,10 +470,37 @@ function addStepCard() {
     refreshAllStepCards();
   });
 
-  insertedCard.querySelector(".step-offset").addEventListener("input", () => {
+  const dayInput = insertedCard.querySelector(".step-day");
+  const dayBadge = insertedCard.querySelector(".step-day-badge");
+
+  dayInput.addEventListener("input", () => {
+    dayBadge.textContent = formatDayBadge(dayInput.value);
+    updateDayBadgeStyle(dayBadge, parseInt(dayInput.value, 10));
     renderDagPreview();
   });
 
+  dayInput.addEventListener("blur", () => {
+    dayInput.classList.add("step-day-input-hidden");
+    dayBadge.style.display = "";
+  });
+
+  dayInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      dayInput.classList.add("step-day-input-hidden");
+      dayBadge.style.display = "";
+    }
+  });
+
+  dayBadge.addEventListener("click", (e) => {
+    e.stopPropagation();
+    dayInput.classList.remove("step-day-input-hidden");
+    dayBadge.style.display = "none";
+    dayInput.focus();
+    dayInput.select();
+  });
+
+  updateDayBadgeStyle(dayBadge, defaultDay);
   refreshAllStepCards();
 }
 
@@ -431,14 +531,28 @@ function refreshAllStepCards() {
   const cards = Array.from(document.querySelectorAll("#steps-container .step-card"));
 
   cards.forEach((card, idx) => {
-    const badge = card.querySelector(".step-badge");
-    if (badge) badge.textContent = String(idx + 1);
+    const dayBadge = card.querySelector(".step-day-badge");
+    const dayInput = card.querySelector(".step-day");
+    if (dayBadge && dayInput) {
+      dayBadge.textContent = formatDayBadge(dayInput.value);
+      updateDayBadgeStyle(dayBadge, parseInt(dayInput.value, 10));
+    }
 
     renderDependencyChips(card, cards, idx);
     refreshDepAddOptions(card, cards, idx);
   });
 
   renderDagPreview();
+}
+
+function formatDayBadge(val) {
+  const n = parseInt(val, 10);
+  if (isNaN(n)) return "?";
+  return n < 0 ? `${n}` : `${n}`;
+}
+
+function updateDayBadgeStyle(badge, day) {
+  badge.classList.toggle("prep-day", day < 0);
 }
 
 function renderDependencyChips(card, cards, myIndex) {
@@ -536,12 +650,16 @@ function renderDagPreview() {
     layers[depths[i]].push(i);
   }
 
+  const dayValues = cards.map((c) => parseInt(c.querySelector(".step-day")?.value || "1", 10));
+
   let html = '<div class="dag-layers">';
   for (let d = 0; d <= maxDepth; d++) {
     if (d > 0) html += '<div class="dag-arrow-col">\u2192</div>';
     html += '<div class="dag-layer">';
     for (const i of layers[d]) {
-      html += `<div class="dag-node"><span class="dag-node-num">${i + 1}</span><span class="dag-node-name">${escapeHtml(names[i])}</span></div>`;
+      const dayLabel = dayValues[i] < 0 ? `D${dayValues[i]}` : `D${dayValues[i]}`;
+      const prepClass = dayValues[i] < 0 ? " dag-node-prep" : "";
+      html += `<div class="dag-node${prepClass}"><span class="dag-node-num">${escapeHtml(dayLabel)}</span><span class="dag-node-name">${escapeHtml(names[i])}</span></div>`;
     }
     html += "</div>";
   }
@@ -555,12 +673,25 @@ function protocolFormRequestPayload() {
   const description = protocolForm.elements.description.value;
 
   const cards = Array.from(document.querySelectorAll("#steps-container .step-card"));
-  const steps = cards.map((card) => ({
-    name: card.querySelector(".step-name").value,
-    details: card.querySelector(".step-details").value,
-    parent_step_indexes: JSON.parse(card.dataset.parentIndexes || "[]"),
-    default_offset_days: parseInt(card.querySelector(".step-offset").value || "0", 10),
-  }));
+  const days = cards.map((c) => parseInt(c.querySelector(".step-day").value || "1", 10));
+  const parentIndexes = cards.map((c) => JSON.parse(c.dataset.parentIndexes || "[]"));
+
+  const steps = cards.map((card, i) => {
+    const pis = parentIndexes[i];
+    let offset;
+    if (pis.length === 0) {
+      offset = days[i] - 1; // root: offset from start_date (Day 1 = offset 0, Day -2 = offset -3)
+    } else {
+      const maxParentDay = Math.max(...pis.map((p) => days[p]));
+      offset = days[i] - maxParentDay;
+    }
+    return {
+      name: card.querySelector(".step-name").value,
+      details: card.querySelector(".step-details").value,
+      parent_step_indexes: pis,
+      default_offset_days: offset,
+    };
+  });
 
   return { name, description, steps };
 }
@@ -657,9 +788,15 @@ function rebuildTaskContext() {
 
 /* ── Standalone tasks helpers ───────────────────────────────────── */
 
+function standaloneTasksUnassigned() {
+  return state.standaloneTasks
+    .filter((t) => !t.date)
+    .sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+}
+
 function standaloneTasksForDate(dateStr) {
   return state.standaloneTasks
-    .filter((t) => t.date === dateStr)
+    .filter((t) => t.date && t.date === dateStr)
     .sort((a, b) => {
       // Tasks with time_of_day first, then by created_at
       if (a.time_of_day && !b.time_of_day) return -1;
@@ -699,9 +836,11 @@ function beginInlineCreate(date, parentEl) {
       e.preventDefault();
       const title = input.value.trim();
       if (!title) { cancelInlineCreate(); return; }
+      const body = { title };
+      if (date) body.date = date;
       const res = await api("/api/tasks", {
         method: "POST",
-        body: JSON.stringify({ title, date }),
+        body: JSON.stringify(body),
       });
       cancelInlineCreate();
       if (res.error) { showStatus(res.error, true); return; }
@@ -762,7 +901,7 @@ async function saveExpandedStandaloneTask(taskId) {
   await refreshAll();
 }
 
-function buildExpandedStandaloneCard(task) {
+function buildExpandedStandaloneCard(task, weekView) {
   const card = document.createElement("div");
   card.className = "standalone-expanded";
   card.dataset.taskId = task.id;
@@ -813,6 +952,56 @@ function buildExpandedStandaloneCard(task) {
   swatchRow.appendChild(clearSwatch);
   card.appendChild(swatchRow);
 
+  // Day picker (assign/clear date within current week)
+  if (weekView && weekView.days) {
+    const dayPickerRow = document.createElement("div");
+    dayPickerRow.className = "day-picker-row";
+
+    const dayLabel = document.createElement("span");
+    dayLabel.className = "day-picker-label";
+    dayLabel.textContent = "Day:";
+    dayPickerRow.appendChild(dayLabel);
+
+    for (const wd of weekView.days) {
+      const dayBtn = document.createElement("button");
+      dayBtn.type = "button";
+      dayBtn.className = "day-picker-btn";
+      const d = new Date(wd.date + "T00:00:00");
+      dayBtn.textContent = d.toLocaleDateString(undefined, { weekday: "short" });
+      dayBtn.title = wd.date;
+      if (task.date === wd.date) dayBtn.classList.add("selected");
+      dayBtn.addEventListener("click", async () => {
+        await api(`/api/tasks/${task.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ date: wd.date }),
+        });
+        state.expandedTaskId = null;
+        await refreshAll();
+      });
+      dayPickerRow.appendChild(dayBtn);
+    }
+
+    // Clear button to unassign date
+    if (task.date) {
+      const clearBtn = document.createElement("button");
+      clearBtn.type = "button";
+      clearBtn.className = "day-picker-btn day-picker-clear";
+      clearBtn.textContent = "\u00d7";
+      clearBtn.title = "Unassign date";
+      clearBtn.addEventListener("click", async () => {
+        await api(`/api/tasks/${task.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ date: null }),
+        });
+        state.expandedTaskId = null;
+        await refreshAll();
+      });
+      dayPickerRow.appendChild(clearBtn);
+    }
+
+    card.appendChild(dayPickerRow);
+  }
+
   // Actions
   const actions = document.createElement("div");
   actions.className = "standalone-expanded-actions";
@@ -849,7 +1038,22 @@ function renderProtocols() {
     if (!isTouchInteraction()) li.draggable = true;
     li.dataset.protocolId = p.id;
     li.style.borderLeft = `4px solid ${protocolColor(p.id)}`;
-    li.innerHTML = `<strong>${escapeHtml(p.name)}</strong><br/><small>${escapeHtml(p.description || "")}</small>`;
+
+    const content = document.createElement("div");
+    content.className = "protocol-item-content";
+    content.innerHTML = `<strong>${escapeHtml(p.name)}</strong><br/><small>${escapeHtml(p.description || "")}</small>`;
+    li.appendChild(content);
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "protocol-delete-x";
+    deleteBtn.title = "Delete protocol";
+    deleteBtn.textContent = "\u00d7";
+    deleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteProtocol(p.id, p.name);
+    });
+    li.appendChild(deleteBtn);
 
     li.addEventListener("dragstart", (e) => {
       setDragPayload(e, {
@@ -865,6 +1069,17 @@ function renderProtocols() {
 
     protocolList.appendChild(li);
   }
+}
+
+async function deleteProtocol(protocolId, protocolName) {
+  if (!confirm(`Delete protocol "${protocolName}"? This cannot be undone.`)) return;
+  const res = await api(`/api/protocols/${protocolId}`, { method: "DELETE" });
+  if (res && res.error) {
+    showStatus(res.error, true);
+    return;
+  }
+  showStatus("Protocol deleted.");
+  await refreshAll();
 }
 
 function renderExperiments() {
@@ -1113,7 +1328,7 @@ function drawTaskRows(cellEl, cell, previews) {
     rows.push({
       kind: "task",
       task,
-      text: `${ctx.protocolName}: ${task.step_name}`,
+      text: task.step_name,
       experimentId: ctx.experimentId,
       parentDate: ctx.parentDate,
       nextDates: ctx.nextDates,
@@ -1138,7 +1353,7 @@ function drawTaskRows(cellEl, cell, previews) {
         rows.push({
           kind: "ghost",
           task: { ...task, date: projectedDate },
-          text: `${ctx.protocolName}: ${task.step_name}`,
+          text: task.step_name,
           experimentId: ctx.experimentId,
         });
       }
@@ -1564,12 +1779,19 @@ async function renderWeek(options = {}) {
       stageMove(src.experimentId, src.taskId, wd.date);
     });
 
-    renderWeekDayContent(wrap, wd);
+    renderWeekDayContent(wrap, wd, weekView);
     weekGrid.appendChild(wrap);
   }
+
+  // "This Week" unassigned tasks column
+  const unassigned = standaloneTasksUnassigned();
+  const unassignedWrap = document.createElement("section");
+  unassignedWrap.className = "week-day week-unassigned-column";
+  renderWeekUnassignedContent(unassignedWrap, unassigned, weekView);
+  weekGrid.appendChild(unassignedWrap);
 }
 
-function renderWeekDayContent(wrap, wd) {
+function renderWeekDayContent(wrap, wd, weekView) {
   const tasks = wd.tasks || [];
   const saTasks = standaloneTasksForDate(wd.date);
   const d = new Date(wd.date + "T00:00:00");
@@ -1593,7 +1815,7 @@ function renderWeekDayContent(wrap, wd) {
 
   // Standalone tasks
   saTasks.forEach((sa) => {
-    container.appendChild(buildWeekStandaloneCard(sa));
+    container.appendChild(buildWeekStandaloneCard(sa, weekView));
   });
 
   if (taskCount === 0) {
@@ -1609,6 +1831,37 @@ function renderWeekDayContent(wrap, wd) {
     if (state.placement || state.pendingMove) return;
     if (e.target.closest(".week-task") || e.target.closest(".standalone-task-card") || e.target.closest(".inline-create-card") || e.target.closest(".standalone-expanded")) return;
     beginInlineCreate(wd.date, container);
+  });
+}
+
+function renderWeekUnassignedContent(wrap, unassignedTasks, weekView) {
+  const taskCount = unassignedTasks.length;
+
+  const header = document.createElement("div");
+  header.className = "week-day-header week-unassigned-header";
+  header.innerHTML = `<span class="week-day-label">This Week</span>${taskCount > 0 ? `<span class="week-day-count">${taskCount}</span>` : ""}`;
+  wrap.appendChild(header);
+
+  const container = document.createElement("div");
+  container.className = "week-day-tasks";
+  wrap.appendChild(container);
+
+  unassignedTasks.forEach((sa) => {
+    container.appendChild(buildWeekStandaloneCard(sa, weekView));
+  });
+
+  if (taskCount === 0) {
+    const empty = document.createElement("div");
+    empty.className = "week-day-empty";
+    empty.textContent = "No unassigned tasks";
+    container.appendChild(empty);
+  }
+
+  // Click empty area to inline-create with null date
+  wrap.addEventListener("click", (e) => {
+    if (state.placement || state.pendingMove) return;
+    if (e.target.closest(".standalone-task-card") || e.target.closest(".inline-create-card") || e.target.closest(".standalone-expanded")) return;
+    beginInlineCreate(null, container);
   });
 }
 
@@ -1728,8 +1981,7 @@ function buildWeekTaskCard(task, index) {
       <span class="week-task-priority">${index + 1}</span>
     </div>
     <div class="week-task-body">
-      <div class="week-task-protocol">${escapeHtml(protocolName)}</div>
-      <div class="week-task-step">${escapeHtml(stepName)}</div>
+      <div class="week-task-step" style="font-weight:700">${escapeHtml(stepName)}</div>
       <div class="week-task-status-line">${statusHtml}</div>
     </div>
     <div class="week-task-actions">
@@ -1759,9 +2011,9 @@ function buildWeekTaskCard(task, index) {
   return card;
 }
 
-function buildWeekStandaloneCard(task) {
+function buildWeekStandaloneCard(task, weekView) {
   if (state.expandedTaskId === task.id) {
-    const expanded = buildExpandedStandaloneCard(task);
+    const expanded = buildExpandedStandaloneCard(task, weekView);
     return expanded;
   }
 
@@ -1817,6 +2069,7 @@ function buildWeekStandaloneCard(task) {
   card.appendChild(delBtn);
 
   card.addEventListener("click", (e) => {
+    if (e.target.closest(".standalone-check") || e.target.closest(".standalone-delete-x")) return;
     e.stopPropagation();
     state.expandedTaskId = task.id;
     drawMonthGrid();
@@ -1951,7 +2204,7 @@ function stageMove(experimentId, taskId, toDate) {
     toDate,
     deltaDays,
     shiftedStepIds: Array.from(shiftedStepIds),
-    label: `${ctx.protocolName}: ${ctx.task.step_name}`,
+    label: ctx.task.step_name,
   };
   showMovePopover(toDate);
 
@@ -2045,7 +2298,7 @@ function previewDragMove(experimentId, taskId, cellDate) {
     toDate: cellDate,
     deltaDays,
     shiftedStepIds: Array.from(shiftedStepIds),
-    label: `${ctx.protocolName}: ${ctx.task.step_name}`,
+    label: ctx.task.step_name,
     preview: true,
   };
 

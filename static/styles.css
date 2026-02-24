@@ -687,9 +687,8 @@ body.drag-task-active .task-row {
 }
 
 .task-row-text {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  word-break: break-word;
   min-width: 0;
 }
 
@@ -706,7 +705,7 @@ body.drag-task-active .task-row {
 
 .week-grid {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr)) minmax(0, 0.8fr);
   gap: 0.3rem;
   flex: 1;
   min-height: 0;
@@ -903,16 +902,14 @@ body.drag-task-active .task-row {
 
 .week-task-protocol {
   font-weight: 700;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .week-task-step {
   color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .week-task-status-line {
@@ -1182,18 +1179,34 @@ select {
   gap: 0.5rem;
 }
 
-.step-badge {
+.step-day-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.5rem;
-  height: 1.5rem;
-  border-radius: 50%;
+  min-width: 2.2rem;
+  height: 1.6rem;
+  border-radius: 999px;
   background: var(--accent);
   color: #fff;
-  font-size: 0.7rem;
+  font-size: 0.72rem;
   font-weight: 700;
   flex-shrink: 0;
+  padding: 0 0.4rem;
+  cursor: pointer;
+  transition: background 80ms ease;
+  user-select: none;
+}
+
+.step-day-badge:hover {
+  background: #0a504c;
+}
+
+.step-day-badge.prep-day {
+  background: #7b5b17;
+}
+
+.step-day-badge.prep-day:hover {
+  background: #5e4410;
 }
 
 .step-card-header .step-name {
@@ -1295,20 +1308,96 @@ select {
   cursor: pointer;
 }
 
-.step-offset-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  font-size: 0.75rem;
-  color: var(--muted);
-  white-space: nowrap;
+.step-day-input-hidden {
+  display: none !important;
 }
 
-.step-offset-field input {
+.step-card-header .step-day:not(.step-day-input-hidden) {
   width: 3.5rem;
   text-align: center;
   padding: 0.2rem 0.3rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  border: 2px solid var(--accent);
+  border-radius: var(--radius);
+  color: var(--accent);
+}
+
+.step-card-header .step-day:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(12, 95, 90, 0.15);
+}
+
+.step-repeat-btn {
+  border: none;
+  background: none;
+  color: var(--muted);
   font-size: 0.78rem;
+  cursor: pointer;
+  padding: 0.15rem 0.3rem;
+  border-radius: 4px;
+  line-height: 1;
+  transition: color 80ms ease, background 80ms ease;
+}
+
+.step-repeat-btn:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.add-step-bottom {
+  justify-self: start;
+}
+
+.add-prep-step {
+  justify-self: start;
+  color: #7b5b17;
+  border-color: #d8c28e;
+  background: #fef9e8;
+  font-size: 0.75rem;
+}
+
+.add-prep-step:hover {
+  background: #fdf3d0;
+}
+
+.protocol-delete-x {
+  border: none;
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  opacity: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  font-size: 0.78rem;
+  line-height: 1;
+  transition: opacity 120ms ease, background 120ms ease;
+}
+
+.protocol-item:hover .protocol-delete-x {
+  opacity: 0.55;
+}
+
+.protocol-delete-x:hover {
+  opacity: 1 !important;
+  background: rgba(171, 47, 63, 0.1);
+}
+
+.protocol-item-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.protocol-item {
+  display: flex;
+  align-items: start;
+  gap: 0.4rem;
 }
 
 /* DAG Preview */
@@ -1378,19 +1467,29 @@ select {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1rem;
+  min-width: 1.2rem;
   height: 1rem;
-  border-radius: 50%;
+  border-radius: 999px;
   background: var(--accent);
   color: #fff;
-  font-size: 0.52rem;
+  font-size: 0.5rem;
   font-weight: 700;
   flex-shrink: 0;
+  padding: 0 0.15rem;
 }
 
 .dag-node-name {
   color: var(--text);
   font-weight: 500;
+}
+
+.dag-node-prep {
+  border-color: #d8c28e;
+  background: #fef9e8;
+}
+
+.dag-node-prep .dag-node-num {
+  background: #7b5b17;
 }
 
 /* ── Responsive ─────────────────────────────────────────────────── */
@@ -1872,4 +1971,74 @@ select {
   font-size: 0.75rem;
   padding: 5px 10px;
   border-radius: var(--radius);
+}
+
+/* ── "This Week" unassigned column ──────────────────────────────── */
+
+.week-unassigned-column {
+  background: rgba(255, 193, 7, 0.04);
+  border-style: dashed;
+  border-color: #d8c28e;
+}
+
+.week-unassigned-header {
+  background: rgba(255, 193, 7, 0.08);
+  border-bottom-color: #d8c28e;
+}
+
+.week-unassigned-header .week-day-label {
+  color: #7b5b17;
+}
+
+.week-unassigned-header .week-day-count {
+  background: #d8c28e;
+  color: #5e4410;
+}
+
+/* ── Day picker (expanded standalone card) ──────────────────────── */
+
+.day-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.day-picker-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-weight: 600;
+  margin-right: 2px;
+}
+
+.day-picker-btn {
+  border: 1px solid var(--border);
+  background: #f7faf9;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 0.68rem;
+  cursor: pointer;
+  transition: background 80ms, border-color 80ms;
+}
+
+.day-picker-btn:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.day-picker-btn.selected {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.day-picker-clear {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: transparent;
+  font-weight: 700;
+}
+
+.day-picker-clear:hover {
+  background: rgba(171, 47, 63, 0.08);
 }

@@ -94,7 +94,7 @@ pub fn schedule_from_protocol(
     for step_id in order {
         let step = step_map[&step_id];
         let date = if step.parent_step_ids.is_empty() {
-            start_date
+            start_date + Duration::days(step.default_offset_days as i64)
         } else {
             let latest_parent = step
                 .parent_step_ids

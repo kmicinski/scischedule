@@ -28,7 +28,7 @@ pub fn router(state: AppState) -> Router {
         .route("/", get(index))
         .route("/api/me", get(me))
         .route("/api/protocols", get(list_protocols).post(create_protocol))
-        .route("/api/protocols/:id", get(get_protocol).patch(update_protocol))
+        .route("/api/protocols/:id", get(get_protocol).patch(update_protocol).delete(delete_protocol_handler))
         .route(
             "/api/experiments",
             get(list_experiments).post(plan_experiment),
@@ -119,6 +119,15 @@ async fn update_protocol(
     Json(req): Json<CreateProtocolRequest>,
 ) -> Result<Json<crate::domain::Protocol>, ApiError> {
     Ok(Json(service.update_protocol(id, req, &user.username)?))
+}
+
+async fn delete_protocol_handler(
+    State(service): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    service.delete_protocol(id, &user.username)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn plan_experiment(

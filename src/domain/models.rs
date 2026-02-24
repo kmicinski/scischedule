@@ -146,7 +146,7 @@ pub struct StandaloneTask {
     pub time_of_day: Option<String>,
     #[serde(default)]
     pub color_tag: Option<u8>,
-    pub date: NaiveDate,
+    pub date: Option<NaiveDate>,
     pub completed: bool,
     pub created_by: String,
     pub created_at: i64,
@@ -156,7 +156,8 @@ pub struct StandaloneTask {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateStandaloneTaskRequest {
     pub title: String,
-    pub date: NaiveDate,
+    #[serde(default)]
+    pub date: Option<NaiveDate>,
     #[serde(default)]
     pub notes: Option<String>,
     #[serde(default)]
@@ -175,8 +176,8 @@ pub struct UpdateStandaloneTaskRequest {
     pub time_of_day: Option<Option<String>>,
     #[serde(default)]
     pub color_tag: Option<Option<u8>>,
-    #[serde(default)]
-    pub date: Option<NaiveDate>,
+    #[serde(default, deserialize_with = "deserialize_double_option_date")]
+    pub date: Option<Option<NaiveDate>>,
     #[serde(default)]
     pub completed: Option<bool>,
 }
@@ -186,6 +187,15 @@ pub struct UpdateStandaloneTaskRequest {
 enum MaybeMany<T> {
     One(T),
     Many(Vec<T>),
+}
+
+fn deserialize_double_option_date<'de, D>(deserializer: D) -> Result<Option<Option<NaiveDate>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // When the field is present, deserialize its value.
+    // null → Some(None) (clear the date), "2026-02-23" → Some(Some(date))
+    Ok(Some(Option::<NaiveDate>::deserialize(deserializer)?))
 }
 
 fn deserialize_parent_step_ids<'de, D>(deserializer: D) -> Result<Vec<StepId>, D::Error>

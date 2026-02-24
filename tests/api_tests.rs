@@ -1076,3 +1076,581 @@ async fn delete_experiment_forbidden_for_other_user() {
         .unwrap();
     assert_eq!(bob_delete.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn delete_protocol_basic() {
+    let app = app();
+
+    let proto_body = serde_json::json!({
+        "name": "Deletable Proto",
+        "description": "D",
+        "steps": [
+            {"name":"S1", "details":"x", "parent_step_indexes": [], "default_offset_days": 0}
+        ]
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(proto_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let protocol: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let proto_id = protocol["id"].as_str().unwrap();
+
+    // Delete the protocol
+    let delete = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/protocols/{proto_id}")),
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+
+    // Verify it's gone
+    let list = app
+        .oneshot(
+            authed(Request::builder().uri("/api/protocols"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = list.into_body().collect().await.unwrap().to_bytes();
+    let protocols: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(protocols.len(), 0);
+}
+
+#[tokio::test]
+async fn delete_protocol_forbidden_for_other_user() {
+    let app = app();
+
+    let proto_body = serde_json::json!({
+        "name": "Alice's Proto",
+        "description": "D",
+        "steps": [
+            {"name":"S1", "details":"x", "parent_step_indexes": [], "default_offset_days": 0}
+        ]
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(proto_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let protocol: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let proto_id = protocol["id"].as_str().unwrap();
+
+    // Bob tries to delete Alice's protocol
+    let bob_delete = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/protocols/{proto_id}"))
+                .header("Remote-User", "bob")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bob_delete.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn create_standalone_task_no_date() {
+    let app = app();
+
+    let create_body = serde_json::json!({
+        "title": "Buy supplies this week"
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tasks")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(create.status(), StatusCode::OK);
+    let bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let task: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(task["title"], "Buy supplies this week");
+    assert!(task["date"].is_null());
+    assert_eq!(task["completed"], false);
+}
+
+#[tokio::test]
+async fn update_standalone_task_assign_date() {
+    let app = app();
+
+    // Create task with no date
+    let create_body = serde_json::json!({
+        "title": "Unassigned task"
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tasks")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let task: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let task_id = task["id"].as_str().unwrap();
+    assert!(task["date"].is_null());
+
+    // Assign a date
+    let update_body = serde_json::json!({
+        "date": "2026-02-24"
+    });
+
+    let update = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/tasks/{task_id}"))
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(update_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(update.status(), StatusCode::OK);
+    let bytes = update.into_body().collect().await.unwrap().to_bytes();
+    let updated: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(updated["date"], "2026-02-24");
+}
+
+#[tokio::test]
+async fn update_standalone_task_clear_date() {
+    let app = app();
+
+    // Create task with a date
+    let create_body = serde_json::json!({
+        "title": "Dated task",
+        "date": "2026-02-25"
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tasks")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let task: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let task_id = task["id"].as_str().unwrap();
+    assert_eq!(task["date"], "2026-02-25");
+
+    // Clear the date
+    let update_body = serde_json::json!({
+        "date": null
+    });
+
+    let update = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/tasks/{task_id}"))
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(update_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(update.status(), StatusCode::OK);
+    let bytes = update.into_body().collect().await.unwrap().to_bytes();
+    let updated: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(updated["date"].is_null());
+}
+
+#[tokio::test]
+async fn list_standalone_tasks_includes_unassigned() {
+    let app = app();
+
+    // Create a dated task
+    let dated_body = serde_json::json!({
+        "title": "Dated",
+        "date": "2026-03-10"
+    });
+
+    app.clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tasks")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(dated_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Create an unassigned task
+    let undated_body = serde_json::json!({
+        "title": "Undated"
+    });
+
+    app.clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tasks")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(undated_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // List should return both
+    let list = app
+        .oneshot(
+            authed(Request::builder().uri("/api/tasks"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(list.status(), StatusCode::OK);
+    let bytes = list.into_body().collect().await.unwrap().to_bytes();
+    let tasks: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(tasks.len(), 2);
+
+    let dated = tasks.iter().find(|t| t["title"] == "Dated").unwrap();
+    let undated = tasks.iter().find(|t| t["title"] == "Undated").unwrap();
+    assert_eq!(dated["date"], "2026-03-10");
+    assert!(undated["date"].is_null());
+}
+
+#[tokio::test]
+async fn delete_protocol_blocked_by_experiment() {
+    let app = app();
+
+    let proto_body = serde_json::json!({
+        "name": "Used Proto",
+        "description": "D",
+        "steps": [
+            {"name":"S1", "details":"x", "parent_step_indexes": [], "default_offset_days": 0}
+        ]
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(proto_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let protocol: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let proto_id = protocol["id"].as_str().unwrap();
+
+    // Create an experiment using this protocol
+    let plan_body = serde_json::json!({
+        "protocol_id": proto_id,
+        "start_date": "2026-03-01"
+    });
+
+    app.clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/experiments")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(plan_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Try to delete the protocol — should fail
+    let delete = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/protocols/{proto_id}")),
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn complex_protocol_create_experiment_then_delete() {
+    let app = app();
+
+    // 1. Create a 5-step protocol with a non-trivial DAG:
+    //    Step1 (root) → Step2, Step3
+    //    Step2 → Step4
+    //    Step3 → Step4
+    //    Step4 → Step5
+    let proto_body = serde_json::json!({
+        "name": "Complex Protocol",
+        "description": "5-step DAG with branching and convergence",
+        "steps": [
+            {"name":"Seed cells",      "details":"plate cells",   "parent_step_indexes": [],     "default_offset_days": 0},
+            {"name":"Add reagent A",   "details":"reagent A",     "parent_step_indexes": [0],    "default_offset_days": 2},
+            {"name":"Add reagent B",   "details":"reagent B",     "parent_step_indexes": [0],    "default_offset_days": 3},
+            {"name":"Incubate",        "details":"wait",          "parent_step_indexes": [1, 2], "default_offset_days": 1},
+            {"name":"Harvest",         "details":"collect cells",  "parent_step_indexes": [3],    "default_offset_days": 2}
+        ]
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(proto_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+    let bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let protocol: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let proto_id = protocol["id"].as_str().unwrap();
+    assert_eq!(protocol["steps"].as_array().unwrap().len(), 5);
+
+    // 2. Plan an experiment from it
+    let plan_body = serde_json::json!({
+        "protocol_id": proto_id,
+        "start_date": "2026-03-01"
+    });
+
+    let plan = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/experiments")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(plan_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plan.status(), StatusCode::OK);
+    let bytes = plan.into_body().collect().await.unwrap().to_bytes();
+    let exp: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let exp_id = exp["id"].as_str().unwrap();
+    assert_eq!(exp["tasks"].as_array().unwrap().len(), 5);
+    assert_eq!(exp["status"], "Draft");
+
+    // Verify task dates respect the DAG:
+    // Step1 = March 1, Step2 = March 3 (offset 2), Step3 = March 4 (offset 3),
+    // Step4 = March 5 (max(3,4)+1), Step5 = March 7 (5+2)
+    let tasks = exp["tasks"].as_array().unwrap();
+    assert_eq!(tasks[0]["date"], "2026-03-01");
+    assert_eq!(tasks[1]["date"], "2026-03-03");
+    assert_eq!(tasks[2]["date"], "2026-03-04");
+    assert_eq!(tasks[3]["date"], "2026-03-05");
+    assert_eq!(tasks[4]["date"], "2026-03-07");
+
+    // 3. Lock the experiment
+    let lock = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/experiments/{exp_id}/lock")),
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(lock.status(), StatusCode::OK);
+    let bytes = lock.into_body().collect().await.unwrap().to_bytes();
+    let locked: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(locked["status"], "Live");
+
+    // 4. Move a task (Step2 from March 3 to March 4)
+    let move_body = serde_json::json!({
+        "task_id": tasks[1]["id"],
+        "new_date": "2026-03-04",
+        "reason": "lab scheduling conflict"
+    });
+
+    let moved = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/experiments/{exp_id}/tasks/move"))
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(move_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(moved.status(), StatusCode::OK);
+    let bytes = moved.into_body().collect().await.unwrap().to_bytes();
+    let moved_exp: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let moved_tasks = moved_exp["tasks"].as_array().unwrap();
+    assert_eq!(moved_tasks[1]["date"], "2026-03-04");
+
+    // 5. Cannot delete protocol while experiment exists
+    let proto_delete_blocked = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/protocols/{proto_id}")),
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(proto_delete_blocked.status(), StatusCode::BAD_REQUEST);
+
+    // 6. Delete the experiment
+    let exp_delete = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/experiments/{exp_id}")),
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(exp_delete.status(), StatusCode::NO_CONTENT);
+
+    // 7. Now delete the protocol
+    let proto_delete = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/protocols/{proto_id}")),
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(proto_delete.status(), StatusCode::NO_CONTENT);
+
+    // 8. Verify both lists are empty
+    let exp_list = app
+        .clone()
+        .oneshot(
+            authed(Request::builder().uri("/api/experiments"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = exp_list.into_body().collect().await.unwrap().to_bytes();
+    let experiments: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(experiments.len(), 0);
+
+    let proto_list = app
+        .oneshot(
+            authed(Request::builder().uri("/api/protocols"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = proto_list.into_body().collect().await.unwrap().to_bytes();
+    let protocols: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(protocols.len(), 0);
+}

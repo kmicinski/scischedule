@@ -238,6 +238,29 @@ impl<R: Repository> AppService<R> {
         Ok(())
     }
 
+    pub fn delete_protocol(
+        &self,
+        id: ProtocolId,
+        user: &str,
+    ) -> Result<(), ServiceError> {
+        let protocol = self.repo.get_protocol(id)?;
+        if !protocol.created_by.is_empty() && protocol.created_by != user {
+            return Err(ServiceError::Forbidden);
+        }
+        let has_experiments = self
+            .repo
+            .list_experiments()?
+            .iter()
+            .any(|e| e.protocol_id == id);
+        if has_experiments {
+            return Err(ServiceError::InvalidProtocolEdit(
+                "delete experiments using this protocol first".into(),
+            ));
+        }
+        self.repo.delete_protocol(id)?;
+        Ok(())
+    }
+
     pub fn create_standalone_task(
         &self,
         req: CreateStandaloneTaskRequest,
@@ -437,6 +460,12 @@ mod tests {
         fn delete_experiment(&self, id: ExperimentId) -> Result<(), RepoError> {
             let mut experiments = self.experiments.lock().unwrap();
             experiments.retain(|e| e.id != id);
+            Ok(())
+        }
+
+        fn delete_protocol(&self, id: ProtocolId) -> Result<(), RepoError> {
+            let mut protocols = self.protocols.lock().unwrap();
+            protocols.retain(|p| p.id != id);
             Ok(())
         }
 
