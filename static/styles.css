@@ -1728,13 +1728,23 @@ select {
   opacity: 0.55;
 }
 
+.standalone-check-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  cursor: pointer;
+  flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
 .standalone-check {
-  width: 13px;
-  height: 13px;
+  width: 15px;
+  height: 15px;
   margin: 0;
   cursor: pointer;
   accent-color: var(--accent);
-  flex-shrink: 0;
 }
 
 .standalone-title {
@@ -1783,6 +1793,14 @@ select {
 .standalone-task-card.completed .standalone-title {
   text-decoration: line-through;
   opacity: 0.55;
+}
+
+.standalone-task-card[draggable="true"] {
+  cursor: grab;
+}
+
+.standalone-task-card[draggable="true"]:active {
+  cursor: grabbing;
 }
 
 /* Inline create */

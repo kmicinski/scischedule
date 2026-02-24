@@ -1530,12 +1530,16 @@ function buildMonthStandaloneRow(task) {
     : null;
   if (colorTag) div.style.setProperty("--tag-color", colorTag.hex);
 
+  const checkWrap = document.createElement("label");
+  checkWrap.className = "standalone-check-wrap";
+  checkWrap.addEventListener("click", (e) => e.stopPropagation());
   const check = document.createElement("input");
   check.type = "checkbox";
   check.className = "standalone-check";
   check.checked = task.completed;
   check.addEventListener("change", () => toggleStandaloneTaskCompleted(task.id));
-  div.appendChild(check);
+  checkWrap.appendChild(check);
+  div.appendChild(checkWrap);
 
   const title = document.createElement("span");
   title.className = "standalone-title";
@@ -1723,6 +1727,11 @@ async function renderWeek(options = {}) {
     // Dragover: lightweight preview
     wrap.addEventListener("dragover", (e) => {
       const drag = readDragPayload(e.dataTransfer);
+      if (drag?.kind === "standalone" && drag.taskId) {
+        e.preventDefault();
+        wrap.classList.add("drag-over");
+        return;
+      }
       if (drag?.kind === "task" && drag.taskId) {
         const ctx = state.taskContext.get(drag.taskId);
         if (ctx?.parentDate && wd.date < ctx.parentDate) {
@@ -1744,10 +1753,19 @@ async function renderWeek(options = {}) {
     });
 
     // Drop: promote preview or stage move
-    wrap.addEventListener("drop", (e) => {
+    wrap.addEventListener("drop", async (e) => {
       e.preventDefault();
       wrap.classList.remove("drag-over");
       const drag = readDragPayload(e.dataTransfer);
+      if (drag?.kind === "standalone" && drag.taskId) {
+        await api(`/api/tasks/${drag.taskId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ date: wd.date }),
+        });
+        clearActiveDrag();
+        await refreshAll();
+        return;
+      }
       if (drag?.kind === "task" && drag.taskId) {
         if (state.pendingMove?.preview && state.pendingMove.toDate === wd.date) {
           delete state.pendingMove.preview;
@@ -1879,6 +1897,29 @@ function renderWeekUnassignedContent(wrap, unassignedTasks, weekView) {
     empty.textContent = "Click + to add a task for this week";
     container.appendChild(empty);
   }
+
+  // Drag-and-drop: accept standalone tasks to unassign their date
+  wrap.addEventListener("dragover", (e) => {
+    const drag = readDragPayload(e.dataTransfer);
+    if (drag?.kind === "standalone") {
+      e.preventDefault();
+      wrap.classList.add("drag-over");
+    }
+  });
+  wrap.addEventListener("dragleave", () => wrap.classList.remove("drag-over"));
+  wrap.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    wrap.classList.remove("drag-over");
+    const drag = readDragPayload(e.dataTransfer);
+    if (drag?.kind === "standalone" && drag.taskId) {
+      await api(`/api/tasks/${drag.taskId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ date: null }),
+      });
+      clearActiveDrag();
+      await refreshAll();
+    }
+  });
 
   // Click empty area to inline-create with null date
   wrap.addEventListener("click", (e) => {
@@ -2045,6 +2086,13 @@ function buildWeekStandaloneCard(task, weekView) {
   if (task.completed) card.classList.add("completed");
   card.dataset.standaloneTaskId = task.id;
 
+  // Drag-and-drop support
+  card.draggable = !isTouchInteraction();
+  card.addEventListener("dragstart", (e) => {
+    setDragPayload(e, { kind: "standalone", taskId: task.id });
+  });
+  card.addEventListener("dragend", () => clearActiveDrag());
+
   const colorTag = typeof task.color_tag === "number" && task.color_tag < 8
     ? TASK_TAG_COLORS[task.color_tag]
     : null;
@@ -2052,6 +2100,9 @@ function buildWeekStandaloneCard(task, weekView) {
     card.style.borderLeftColor = colorTag.hex;
   }
 
+  const checkWrap = document.createElement("label");
+  checkWrap.className = "standalone-check-wrap";
+  checkWrap.addEventListener("click", (e) => e.stopPropagation());
   const check = document.createElement("input");
   check.type = "checkbox";
   check.className = "standalone-check";
@@ -2060,8 +2111,8 @@ function buildWeekStandaloneCard(task, weekView) {
     e.stopPropagation();
     toggleStandaloneTaskCompleted(task.id);
   });
-  check.addEventListener("click", (e) => e.stopPropagation());
-  card.appendChild(check);
+  checkWrap.appendChild(check);
+  card.appendChild(checkWrap);
 
   const title = document.createElement("span");
   title.className = "standalone-title";
@@ -2087,7 +2138,7 @@ function buildWeekStandaloneCard(task, weekView) {
   card.appendChild(delBtn);
 
   card.addEventListener("click", (e) => {
-    if (e.target.closest(".standalone-check") || e.target.closest(".standalone-delete-x")) return;
+    if (e.target.closest(".standalone-check-wrap") || e.target.closest(".standalone-delete-x")) return;
     e.stopPropagation();
     state.expandedTaskId = task.id;
     drawMonthGrid();
@@ -2799,6 +2850,13 @@ function setDragPayload(event, payload) {
     return;
   }
 
+  if (payload.kind === "standalone") {
+    dataTransfer.effectAllowed = "move";
+    writeDragData(dataTransfer, "text/standalone-task-id", payload.taskId || "");
+    writeDragData(dataTransfer, "text/plain", `scischedule:standalone:${payload.taskId || ""}`);
+    return;
+  }
+
   if (payload.kind === "protocol") {
     dataTransfer.effectAllowed = "copyMove";
     writeDragData(dataTransfer, "text/protocol-id", payload.protocolId || "");
@@ -2812,6 +2870,11 @@ function setDragPayload(event, payload) {
 function readDragPayload(dataTransfer) {
   const fallback = state.activeDrag;
   if (!dataTransfer) return fallback;
+
+  const standaloneTaskId = safeGetData(dataTransfer, "text/standalone-task-id");
+  if (standaloneTaskId) {
+    return { kind: "standalone", taskId: standaloneTaskId };
+  }
 
   const taskId = safeGetData(dataTransfer, "text/task-id");
   const experimentId = resolveTaskExperimentId(
@@ -2841,6 +2904,12 @@ function readDragPayload(dataTransfer) {
         taskId: taskFromPlain,
         experimentId: resolveTaskExperimentId(taskFromPlain, expFromPlain || ""),
       };
+    }
+  }
+  if (plain.startsWith("scischedule:standalone:")) {
+    const [, , saIdFromPlain] = plain.split(":");
+    if (saIdFromPlain) {
+      return { kind: "standalone", taskId: saIdFromPlain };
     }
   }
   if (plain.startsWith("scischedule:protocol:")) {
