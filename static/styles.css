@@ -1430,8 +1430,183 @@ select {
 }
 
 @media (max-width: 800px) {
-  .month-grid,
+  .task-row { font-size: 0.8rem; }
+  .week-task { font-size: 0.78rem; }
+  .day-number { font-size: 0.8rem; }
+  .btn { min-height: 40px; }
+  .tab { min-height: 40px; }
+  .month-grid { grid-auto-rows: minmax(72px, 1fr); }
+  .week-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ── Phone breakpoint ────────────────────────────────────────────── */
+
+@media (max-width: 480px) {
+  /* Layout */
+  .app-shell {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 100dvh;
+  }
+  .main-content { border: none; }
+  .view { padding: 0.5rem; }
+  .topbar {
+    flex-wrap: wrap;
+  }
+  .topbar-left {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+  .actions .btn { flex: 1; text-align: center; }
+
+  /* Touch targets (44px min per Apple HIG) */
+  .btn {
+    padding: 0.6rem 1rem;
+    min-height: 44px;
+    font-size: 0.9rem;
+  }
+  .tab {
+    padding: 0.6rem 1rem;
+    min-height: 44px;
+    font-size: 0.9rem;
+  }
+  .task-row {
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+  }
+  .drag-handle { opacity: 0.5; }
+
+  /* Font size floors */
+  .task-row { font-size: 0.82rem; }
+  .week-task { font-size: 0.8rem; }
+  .day-number { font-size: 0.82rem; }
+  .weekday { font-size: 0.75rem; }
+  .status-line { font-size: 0.85rem; }
+  .ghost-badge { font-size: 0.65rem; }
+
+  /* Month grid */
+  .month-grid {
+    gap: 2px;
+    grid-auto-rows: minmax(60px, 1fr);
+  }
+  .month-cell {
+    padding: 0.15rem 0.2rem;
+    min-height: 56px;
+  }
+
+  /* Week grid */
   .week-grid {
     grid-template-columns: 1fr;
+    gap: 0.5rem;
   }
+
+  /* Touch selection states */
+  .task-row.touch-selected,
+  .week-task.touch-selected {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+    background: var(--accent-soft);
+  }
+  .month-cell.touch-target-candidate {
+    background: rgba(12, 95, 90, 0.06);
+    border-color: rgba(12, 95, 90, 0.25);
+  }
+
+  /* Touch hint banner */
+  .touch-hint {
+    display: block !important;
+    background: var(--accent-soft);
+    color: var(--accent);
+    text-align: center;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    margin: 0 0.5rem 0.25rem;
+    border-radius: var(--radius);
+  }
+  .touch-hint[style*="display:none"],
+  .touch-hint[style*="display: none"] {
+    display: none !important;
+  }
+
+  /* Placement panel */
+  .placement-panel {
+    margin: 0 0.5rem 0.5rem;
+    padding: 0.5rem;
+    grid-template-columns: 1fr;
+    gap: 0.4rem;
+  }
+
+  /* Protocol dialog — full-screen */
+  #protocol-dialog {
+    width: 100vw;
+    height: 100dvh;
+    max-width: 100vw;
+    max-height: 100dvh;
+    margin: 0;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+  }
+  .protocol-dialog-form {
+    min-width: auto;
+    max-width: 100%;
+    max-height: 100%;
+    padding: 0.75rem;
+    border-radius: 0;
+  }
+  .step-card input,
+  .step-card select,
+  .step-card textarea {
+    padding: 0.5rem;
+    min-height: 40px;
+    font-size: 0.9rem;
+  }
+  .step-delete-btn {
+    min-width: 40px;
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .dialog-actions {
+    position: sticky;
+    bottom: 0;
+    background: var(--panel);
+    padding: 0.75rem 0;
+    border-top: 1px solid var(--border);
+    z-index: 10;
+  }
+  .dialog-actions .btn {
+    flex: 1;
+  }
+
+  /* Move popover — bottom sheet */
+  .move-popover {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: auto;
+    max-width: 100%;
+    min-width: 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    animation: slide-up 200ms ease-out;
+  }
+  @keyframes slide-up {
+    from { transform: translateY(100%); }
+    to { transform: translateY(0); }
+  }
+  .move-popover-hint { display: none; }
+  .move-popover .btn { min-height: 44px; flex: 1; }
+  .move-popover-actions { justify-content: stretch; }
 }
+
+/* ── Default hide touch-only elements ────────────────────────────── */
+
+.touch-hint { display: none; }

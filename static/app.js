@@ -38,6 +38,8 @@ const state = {
   taskNotes: {},
   activeDrag: null,
   protocolEditor: null,
+  touchMoveSource: null,
+  touchPlaceProtocol: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -58,6 +60,42 @@ const placementTitle = $("#placement-title");
 const placementCandidate = $("#placement-candidate");
 const scientistNameInput = $("#scientist-name");
 const appShell = document.querySelector(".app-shell");
+
+/* ── Touch detection utilities ──────────────────────────────────── */
+
+function isTouchDevice() {
+  return "ontouchstart" in window || navigator.maxTouchPoints > 0;
+}
+
+function isMobileViewport() {
+  return window.innerWidth <= 480;
+}
+
+function isTouchInteraction() {
+  return isTouchDevice() && isMobileViewport();
+}
+
+function showTouchHint(message) {
+  const hint = document.getElementById("touch-hint");
+  if (!hint) return;
+  hint.textContent = message;
+  hint.style.display = "";
+}
+
+function dismissTouchHint() {
+  const hint = document.getElementById("touch-hint");
+  if (!hint) return;
+  hint.style.display = "none";
+}
+
+function clearTouchMoveState() {
+  state.touchMoveSource = null;
+  state.touchPlaceProtocol = null;
+  dismissTouchHint();
+  document.querySelectorAll(".touch-selected").forEach((el) => el.classList.remove("touch-selected"));
+  document.querySelectorAll(".touch-target-candidate").forEach((el) => el.classList.remove("touch-target-candidate"));
+  clearDragConstraintZones();
+}
 
 init();
 
@@ -185,6 +223,24 @@ function bindUi() {
   protocolDialog.addEventListener("close", () => {
     state.protocolEditor = null;
     syncProtocolDialogChrome();
+  });
+
+  // Outside-tap cancel for touch move/place
+  document.addEventListener("click", (e) => {
+    if (!isTouchInteraction()) return;
+    if (!state.touchMoveSource && !state.touchPlaceProtocol) return;
+    const target = e.target;
+    if (
+      target.closest(".task-row") ||
+      target.closest(".week-task") ||
+      target.closest(".month-cell") ||
+      target.closest(".week-day") ||
+      target.closest(".move-popover") ||
+      target.closest(".touch-hint")
+    ) return;
+    clearTouchMoveState();
+    drawMonthGrid();
+    renderWeek({ skipFetch: true });
   });
 
   updateLayoutForTab();
@@ -496,6 +552,13 @@ async function saveProtocolFromDialog() {
 
   showStatus(isEdit ? "Protocol updated." : "Protocol created.");
   await refreshAll();
+
+  // On touch, prompt user to place the new protocol
+  if (!isEdit && isTouchInteraction() && saved.id) {
+    state.touchPlaceProtocol = saved.id;
+    showTouchHint("Tap a date to place this protocol");
+  }
+
   return true;
 }
 
@@ -569,7 +632,7 @@ function renderProtocols() {
   for (const p of state.protocols) {
     const li = document.createElement("li");
     li.className = "protocol-item";
-    li.draggable = true;
+    if (!isTouchInteraction()) li.draggable = true;
     li.dataset.protocolId = p.id;
     li.style.borderLeft = `4px solid ${protocolColor(p.id)}`;
     li.innerHTML = `<strong>${escapeHtml(p.name)}</strong><br/><small>${escapeHtml(p.description || "")}</small>`;
@@ -684,6 +747,26 @@ function drawMonthGrid() {
     drawTaskRows(div, cell, previewByDate.get(cell.date) || []);
 
     div.addEventListener("click", () => {
+      // Touch move: tap destination cell
+      if (isTouchInteraction() && state.touchMoveSource) {
+        const src = state.touchMoveSource;
+        const ctx = state.taskContext.get(src.taskId);
+        if (ctx?.parentDate && cell.date < ctx.parentDate) {
+          showStatus(`Cannot move before prerequisite on ${ctx.parentDate}.`, true);
+          return;
+        }
+        clearTouchMoveState();
+        stageMove(src.experimentId, src.taskId, cell.date);
+        return;
+      }
+      // Touch place protocol
+      if (isTouchInteraction() && state.touchPlaceProtocol) {
+        beginPlacement(state.touchPlaceProtocol, cell.date);
+        state.touchPlaceProtocol = null;
+        dismissTouchHint();
+        drawMonthGrid();
+        return;
+      }
       if (state.placement) {
         state.placement.anchorDate = cell.date;
         updatePlacementPanel();
@@ -887,7 +970,7 @@ function drawTaskRows(cellEl, cell, previews) {
 
     // Real tasks: draggable (unless moving away in a staged move)
     if (row.kind === "task" && !row.movingAway) {
-      div.draggable = true;
+      if (!isTouchInteraction()) div.draggable = true;
       div.addEventListener("dragstart", (e) => {
         // Clear any existing pending move when starting a new drag
         if (state.pendingMove) {
@@ -919,7 +1002,28 @@ function drawTaskRows(cellEl, cell, previews) {
 
       div.addEventListener("click", (e) => {
         e.stopPropagation();
-        selectExperiment(row.experimentId);
+        if (isTouchInteraction()) {
+          // Touch: toggle selection for tap-to-move
+          if (state.touchMoveSource && state.touchMoveSource.taskId === row.task.id) {
+            clearTouchMoveState();
+            drawMonthGrid();
+            renderWeek({ skipFetch: true });
+          } else {
+            clearTouchMoveState();
+            state.touchMoveSource = { taskId: row.task.id, experimentId: row.experimentId };
+            div.classList.add("touch-selected");
+            showDragConstraintZones(row.task.id);
+            showTouchHint("Tap a date to move this task");
+            // Highlight valid target cells
+            document.querySelectorAll(".month-cell").forEach((c) => {
+              if (!c.classList.contains("drag-invalid-zone")) {
+                c.classList.add("touch-target-candidate");
+              }
+            });
+          }
+        } else {
+          selectExperiment(row.experimentId);
+        }
       });
 
       div.addEventListener("mouseenter", () => {
@@ -936,7 +1040,7 @@ function drawTaskRows(cellEl, cell, previews) {
     }
 
     if (row.kind === "preview" && row.isRoot) {
-      div.draggable = true;
+      if (!isTouchInteraction()) div.draggable = true;
       div.addEventListener("dragstart", (e) => {
         setDragPayload(e, {
           kind: "protocol",
@@ -1142,6 +1246,20 @@ async function renderWeek(options = {}) {
       clearActiveDrag();
     });
 
+    // Touch move: tap on week day to move task here
+    wrap.addEventListener("click", (e) => {
+      if (!isTouchInteraction() || !state.touchMoveSource) return;
+      if (e.target.closest(".week-task")) return;
+      const src = state.touchMoveSource;
+      const ctx = state.taskContext.get(src.taskId);
+      if (ctx?.parentDate && wd.date < ctx.parentDate) {
+        showStatus(`Cannot move before prerequisite on ${ctx.parentDate}.`, true);
+        return;
+      }
+      clearTouchMoveState();
+      stageMove(src.experimentId, src.taskId, wd.date);
+    });
+
     renderWeekDayContent(wrap, wd);
     weekGrid.appendChild(wrap);
   }
@@ -1190,7 +1308,7 @@ function buildWeekTaskCard(task, index) {
   if (shifted) classes.push("ghost");
   card.className = classes.join(" ");
   card.style.borderLeftColor = experimentColor(expId);
-  card.draggable = !shifted;
+  card.draggable = !shifted && !isTouchInteraction();
   card.dataset.taskId = task.id;
   card.dataset.experimentId = expId;
   card.dataset.date = task.date;
@@ -1215,7 +1333,23 @@ function buildWeekTaskCard(task, index) {
     clearActiveDrag();
   });
 
-  card.addEventListener("click", () => selectExperiment(expId));
+  card.addEventListener("click", (e) => {
+    if (isTouchInteraction()) {
+      e.stopPropagation();
+      if (state.touchMoveSource && state.touchMoveSource.taskId === task.id) {
+        clearTouchMoveState();
+        drawMonthGrid();
+        renderWeek({ skipFetch: true });
+      } else {
+        clearTouchMoveState();
+        state.touchMoveSource = { taskId: task.id, experimentId: expId };
+        card.classList.add("touch-selected");
+        showTouchHint("Tap a day to move this task");
+      }
+    } else {
+      selectExperiment(expId);
+    }
+  });
 
   // Intra-day reorder: dragover/drop on card
   card.addEventListener("dragover", (e) => {
@@ -1346,7 +1480,10 @@ function updatePlacementPanel() {
   placementPanel.classList.remove("hidden");
   placementTitle.textContent = `Protocol Placement: ${protocol?.name || "Unknown"}`;
   placementCandidate.textContent = protocol?.name || "Protocol";
-  $("#placement-subtitle").textContent = `Start date ${state.placement.anchorDate}. Drag the candidate chip to reposition before creating the draft.`;
+  placementCandidate.draggable = !isTouchInteraction();
+  $("#placement-subtitle").textContent = isTouchInteraction()
+    ? `Start date ${state.placement.anchorDate}. Tap a date to reposition.`
+    : `Start date ${state.placement.anchorDate}. Drag the candidate chip to reposition before creating the draft.`;
 }
 
 function buildPlacementTasksByDate() {
@@ -1583,10 +1720,14 @@ function showMovePopover(targetDate) {
   // Bind outside-click handler after a tick to avoid catching the drop event
   setTimeout(() => {
     document.addEventListener("mousedown", handlePopoverOutsideClick);
+    document.addEventListener("touchstart", handlePopoverOutsideClick);
   }, 0);
 }
 
 function positionPopoverNearCell(popover, targetDate) {
+  // On mobile, CSS positions the popover as a bottom sheet
+  if (window.innerWidth <= 480) return;
+
   // Find the matching cell in month or week view
   const cell =
     document.querySelector(`.month-cell[data-date="${targetDate}"]`) ||
@@ -1626,12 +1767,14 @@ function dismissMovePopover() {
   const popover = document.getElementById("move-popover");
   if (popover) popover.remove();
   document.removeEventListener("mousedown", handlePopoverOutsideClick);
+  document.removeEventListener("touchstart", handlePopoverOutsideClick);
 }
 
 function handlePopoverOutsideClick(e) {
   const popover = document.getElementById("move-popover");
   if (!popover) {
     document.removeEventListener("mousedown", handlePopoverOutsideClick);
+    document.removeEventListener("touchstart", handlePopoverOutsideClick);
     return;
   }
   if (!popover.contains(e.target)) {
