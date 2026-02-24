@@ -57,6 +57,7 @@ const state = {
   expandedProtocolId: null,
   hiddenExperimentIds: new Set(JSON.parse(localStorage.getItem("hiddenExperimentIds") || "[]")),
   hiddenProtocolIds: new Set(JSON.parse(localStorage.getItem("hiddenProtocolIds") || "[]")),
+  hideStandaloneTasks: localStorage.getItem("hideStandaloneTasks") === "true",
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -878,7 +879,8 @@ function rebuildTaskContext() {
 
 /* ── Standalone tasks helpers ───────────────────────────────────── */
 
-function standaloneTasksUnassigned() {
+function standaloneTasksUnassigned({ ignoreHidden = false } = {}) {
+  if (!ignoreHidden && state.hideStandaloneTasks) return [];
   return state.standaloneTasks
     .filter((t) => !t.date)
     .sort((a, b) => {
@@ -889,7 +891,8 @@ function standaloneTasksUnassigned() {
     });
 }
 
-function standaloneTasksForDate(dateStr) {
+function standaloneTasksForDate(dateStr, { ignoreHidden = false } = {}) {
+  if (!ignoreHidden && state.hideStandaloneTasks) return [];
   return state.standaloneTasks
     .filter((t) => t.date && t.date === dateStr)
     .sort((a, b) => {
@@ -1391,6 +1394,27 @@ function renderExperiments() {
       list.appendChild(li);
     }
   }
+
+  // Manual Tasks visibility toggle
+  const saHeader = document.createElement("li");
+  saHeader.className = "experiment-protocol-header";
+  if (state.hideStandaloneTasks) saHeader.classList.add("hidden-protocol");
+  const saColor = "var(--muted)";
+  saHeader.innerHTML = `
+    <button class="protocol-visibility-btn" title="${state.hideStandaloneTasks ? "Show" : "Hide"} manual tasks on calendar">
+      <span class="protocol-toggle-dot" style="background:${state.hideStandaloneTasks ? "transparent" : saColor}; border-color:${saColor}"></span>
+    </button>
+    <span class="protocol-header-name">Manual Tasks</span>
+  `;
+  saHeader.querySelector(".protocol-visibility-btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    state.hideStandaloneTasks = !state.hideStandaloneTasks;
+    localStorage.setItem("hideStandaloneTasks", state.hideStandaloneTasks);
+    renderExperiments();
+    drawMonthGrid();
+    renderWeek({ skipFetch: true });
+  });
+  list.appendChild(saHeader);
 }
 
 function isExperimentHidden(experimentId) {
@@ -2001,7 +2025,7 @@ async function renderWeek(options = {}) {
   weekGrid.classList.toggle("has-selection", Boolean(state.selectedExperimentId));
 
   // "This Week" unassigned tasks column (left side)
-  const unassigned = standaloneTasksUnassigned();
+  const unassigned = standaloneTasksUnassigned({ ignoreHidden: true });
   const unassignedWrap = document.createElement("section");
   unassignedWrap.className = "week-day week-unassigned-column";
   renderWeekUnassignedContent(unassignedWrap, unassigned, weekView);
@@ -2089,11 +2113,8 @@ async function renderWeek(options = {}) {
 }
 
 function renderWeekDayContent(wrap, wd, weekView) {
-  const tasks = (wd.tasks || []).filter((t) => {
-    const ctx = state.taskContext.get(t.id);
-    return !ctx || !isExperimentHidden(ctx.experimentId);
-  });
-  const saTasks = standaloneTasksForDate(wd.date);
+  const tasks = wd.tasks || [];
+  const saTasks = standaloneTasksForDate(wd.date, { ignoreHidden: true });
   const d = new Date(wd.date + "T00:00:00");
   const taskCount = tasks.length + saTasks.length;
 
