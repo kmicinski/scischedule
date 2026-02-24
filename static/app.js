@@ -36,6 +36,8 @@ const state = {
   now: new Date(),
   monthCursor: new Date(),
   weekCursor: new Date(),
+  dayCursor: new Date(),
+  dayWeekView: null,
   protocols: [],
   experiments: [],
   standaloneTasks: [],
@@ -65,8 +67,10 @@ const protocolList = $("#protocol-list");
 const monthGrid = $("#month-grid");
 const monthWeekdays = $("#month-weekdays");
 const weekGrid = $("#week-grid");
+const dayGrid = $("#day-grid");
 const monthTitle = $("#month-title");
 const weekTitle = $("#week-title");
+const dayTitle = $("#day-title");
 const statusLine = $("#status-line");
 const lockSelectedBtn = $("#lock-selected-btn");
 const protocolDialog = $("#protocol-dialog");
@@ -151,6 +155,7 @@ function bindUi() {
   $("#today-btn").addEventListener("click", async () => {
     state.monthCursor = new Date();
     state.weekCursor = new Date();
+    state.dayCursor = new Date();
     await renderViews();
   });
 
@@ -183,6 +188,18 @@ function bindUi() {
     await renderWeek();
   });
 
+  $("#day-prev").addEventListener("click", async () => {
+    cancelInlineCreate();
+    state.dayCursor.setDate(state.dayCursor.getDate() - 1);
+    await renderDay();
+  });
+
+  $("#day-next").addEventListener("click", async () => {
+    cancelInlineCreate();
+    state.dayCursor.setDate(state.dayCursor.getDate() + 1);
+    await renderDay();
+  });
+
   $("#placement-create").addEventListener("click", async () => {
     await finalizePlacement();
   });
@@ -202,16 +219,26 @@ function bindUi() {
         target.tagName === "SELECT");
     if (inEditable) return;
 
-    if (state.currentTab !== "week") return;
-
-    if (e.key === "ArrowLeft") {
-      e.preventDefault();
-      state.weekCursor.setDate(state.weekCursor.getDate() - 7);
-      await renderWeek();
-    } else if (e.key === "ArrowRight") {
-      e.preventDefault();
-      state.weekCursor.setDate(state.weekCursor.getDate() + 7);
-      await renderWeek();
+    if (state.currentTab === "week") {
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        state.weekCursor.setDate(state.weekCursor.getDate() - 7);
+        await renderWeek();
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        state.weekCursor.setDate(state.weekCursor.getDate() + 7);
+        await renderWeek();
+      }
+    } else if (state.currentTab === "day") {
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        state.dayCursor.setDate(state.dayCursor.getDate() - 1);
+        await renderDay();
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        state.dayCursor.setDate(state.dayCursor.getDate() + 1);
+        await renderDay();
+      }
     }
   });
 
@@ -272,6 +299,7 @@ function bindUi() {
 function updateLayoutForTab() {
   if (!appShell) return;
   appShell.classList.toggle("week-focus", state.currentTab === "week");
+  appShell.classList.toggle("day-focus", state.currentTab === "day");
 }
 
 /* ── Protocol Dialog ────────────────────────────────────────────── */
@@ -1190,7 +1218,7 @@ function buildExpandedStandaloneCard(task, weekView) {
 /* ── Rendering: sidebar ─────────────────────────────────────────── */
 
 async function renderViews() {
-  await Promise.all([renderMonth(), renderWeek()]);
+  await Promise.all([renderMonth(), renderWeek(), renderDay()]);
 }
 
 function renderProtocols() {
@@ -2255,6 +2283,129 @@ function renderWeekUnassignedContent(wrap, unassignedTasks, weekView) {
     if (e.target.closest(".standalone-task-card") || e.target.closest(".inline-create-card") || e.target.closest(".standalone-expanded")) return;
     beginInlineCreate(null, container);
   });
+}
+
+/* ── Day view ───────────────────────────────────────────────────── */
+
+async function renderDay() {
+  const d = state.dayCursor;
+  const targetISO = dateToISO(d);
+
+  // Check if cached week data covers this day
+  const needFetch =
+    !state.dayWeekView ||
+    targetISO < state.dayWeekView.week_start ||
+    targetISO > state.dayWeekView.days[state.dayWeekView.days.length - 1].date;
+
+  if (needFetch) {
+    const year = d.getFullYear();
+    const month = d.getMonth() + 1;
+    const day = d.getDate();
+    state.dayWeekView = await api(`/api/views/week?year=${year}&month=${month}&day=${day}`);
+  }
+
+  if (!state.dayWeekView) return;
+
+  const weekView = state.dayWeekView;
+  const wd = weekView.days.find((day) => day.date === targetISO);
+
+  // Title: e.g. "Monday, Feb 24, 2026"
+  const dd = new Date(targetISO + "T00:00:00");
+  dayTitle.textContent = dd.toLocaleDateString(undefined, {
+    weekday: "long",
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+
+  const todayISO = dateToISO(new Date());
+  dayGrid.innerHTML = "";
+  dayGrid.classList.toggle("has-selection", Boolean(state.selectedExperimentId));
+
+  // Unassigned column (left side)
+  const unassigned = standaloneTasksUnassigned({ ignoreHidden: true });
+  const unassignedWrap = document.createElement("section");
+  unassignedWrap.className = "week-day week-unassigned-column";
+  renderWeekUnassignedContent(unassignedWrap, unassigned, weekView);
+  dayGrid.appendChild(unassignedWrap);
+
+  // Day column
+  if (wd) {
+    const wrap = document.createElement("section");
+    wrap.className = "week-day";
+    wrap.dataset.date = wd.date;
+
+    const dow = dd.getDay();
+    if (wd.date === todayISO) wrap.classList.add("today");
+    if (dow === 0 || dow === 6) wrap.classList.add("weekend");
+
+    // Drag/drop handlers (same as week view)
+    wrap.addEventListener("dragover", (e) => {
+      const drag = readDragPayload(e.dataTransfer);
+      if (drag?.kind === "standalone" && drag.taskId) {
+        e.preventDefault();
+        wrap.classList.add("drag-over");
+        return;
+      }
+      if (drag?.kind === "task" && drag.taskId) {
+        const ctx = state.taskContext.get(drag.taskId);
+        if (ctx?.parentDate && wd.date < ctx.parentDate) {
+          // Invalid drop target
+        } else {
+          e.preventDefault();
+          wrap.classList.add("drag-over");
+          previewDragMove(
+            resolveTaskExperimentId(drag.taskId, drag.experimentId),
+            drag.taskId,
+            wd.date,
+          );
+        }
+      }
+    });
+
+    wrap.addEventListener("dragleave", () => {
+      wrap.classList.remove("drag-over");
+    });
+
+    wrap.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      wrap.classList.remove("drag-over");
+      const drag = readDragPayload(e.dataTransfer);
+      if (drag?.kind === "standalone" && drag.taskId) {
+        await api(`/api/tasks/${drag.taskId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ date: wd.date }),
+        });
+        clearActiveDrag();
+        await refreshAll();
+        return;
+      }
+      if (drag?.kind === "task" && drag.taskId) {
+        directMove(
+          resolveTaskExperimentId(drag.taskId, drag.experimentId),
+          drag.taskId,
+          wd.date,
+        );
+      }
+      clearActiveDrag();
+    });
+
+    wrap.addEventListener("click", (e) => {
+      if (!isTouchInteraction() || !state.touchMoveSource) return;
+      if (e.target.closest(".week-task")) return;
+      const src = state.touchMoveSource;
+      const ctx = state.taskContext.get(src.taskId);
+      if (ctx?.parentDate && wd.date < ctx.parentDate) {
+        showStatus(`Cannot move before prerequisite on ${ctx.parentDate}.`, true);
+        return;
+      }
+      clearTouchMoveState();
+      stageMove(src.experimentId, src.taskId, wd.date);
+    });
+
+    renderWeekDayContent(wrap, wd, weekView);
+    dayGrid.appendChild(wrap);
+  }
 }
 
 function buildWeekTaskCard(task) {
