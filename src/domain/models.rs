@@ -51,6 +51,8 @@ pub struct ScheduledTask {
     pub planned_date: NaiveDate,
     pub day_priority: i32,
     pub deviation: Option<Deviation>,
+    #[serde(default)]
+    pub completed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

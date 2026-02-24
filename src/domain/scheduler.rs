@@ -114,6 +114,7 @@ pub fn schedule_from_protocol(
             planned_date: date,
             day_priority: 0,
             deviation: None,
+            completed: false,
         });
     }
 

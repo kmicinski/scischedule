@@ -40,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/experiments/:id/lock", post(lock_experiment))
         .route("/api/experiments/:id/tasks/move", patch(move_task))
         .route("/api/experiments/:id/tasks/reorder", patch(reorder_task))
+        .route("/api/experiments/:id/tasks/:task_id/complete", patch(toggle_task_completed))
         .route(
             "/api/tasks",
             get(list_standalone_tasks).post(create_standalone_task),
@@ -178,6 +179,16 @@ async fn reorder_task(
     Json(req): Json<ReorderTaskRequest>,
 ) -> Result<Json<crate::domain::Experiment>, ApiError> {
     Ok(Json(service.reorder_task(id, req, &user.username)?))
+}
+
+async fn toggle_task_completed(
+    State(service): State<AppState>,
+    user: AuthUser,
+    Path((id, task_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<crate::domain::Experiment>, ApiError> {
+    Ok(Json(
+        service.toggle_task_completed(id, task_id, &user.username)?,
+    ))
 }
 
 async fn create_standalone_task(

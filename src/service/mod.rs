@@ -177,6 +177,27 @@ impl<R: Repository> AppService<R> {
         Ok(experiment)
     }
 
+    pub fn toggle_task_completed(
+        &self,
+        experiment_id: ExperimentId,
+        task_id: crate::domain::TaskId,
+        user: &str,
+    ) -> Result<Experiment, ServiceError> {
+        let mut experiment = self.repo.get_experiment(experiment_id)?;
+        if experiment.created_by != user {
+            return Err(ServiceError::Forbidden);
+        }
+        let task = experiment
+            .tasks
+            .iter_mut()
+            .find(|t| t.id == task_id)
+            .ok_or(ServiceError::NotFound)?;
+        task.completed = !task.completed;
+        experiment.updated_at = Utc::now().timestamp();
+        self.repo.upsert_experiment(&experiment)?;
+        Ok(experiment)
+    }
+
     pub fn month_view(
         &self,
         year: i32,

@@ -1654,3 +1654,104 @@ async fn complex_protocol_create_experiment_then_delete() {
     let protocols: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(protocols.len(), 0);
 }
+
+#[tokio::test]
+async fn toggle_experiment_task_completed() {
+    let app = app();
+
+    let create_body = serde_json::json!({
+      "name": "Protocol T",
+      "description": "T desc",
+      "steps": [
+        {"name":"Step1", "details":"x", "parent_step_index": null, "default_offset_days": 0}
+      ]
+    });
+
+    let create = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/protocols")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(create_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let create_bytes = create.into_body().collect().await.unwrap().to_bytes();
+    let protocol: serde_json::Value = serde_json::from_slice(&create_bytes).unwrap();
+
+    let plan_body = serde_json::json!({
+      "protocol_id": protocol["id"],
+      "start_date": "2026-02-05"
+    });
+    let plan = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/experiments")
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::from(plan_body.to_string()))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let plan_bytes = plan.into_body().collect().await.unwrap().to_bytes();
+    let exp: serde_json::Value = serde_json::from_slice(&plan_bytes).unwrap();
+    let exp_id = exp["id"].as_str().unwrap();
+    let task_id = exp["tasks"][0]["id"].as_str().unwrap();
+
+    // Task starts as not completed
+    assert_eq!(exp["tasks"][0]["completed"], false);
+
+    // Toggle to completed
+    let toggle1 = app
+        .clone()
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/experiments/{}/tasks/{}/complete",
+                        exp_id, task_id
+                    ))
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(toggle1.status(), StatusCode::OK);
+    let toggle1_bytes = toggle1.into_body().collect().await.unwrap().to_bytes();
+    let updated: serde_json::Value = serde_json::from_slice(&toggle1_bytes).unwrap();
+    assert_eq!(updated["tasks"][0]["completed"], true);
+
+    // Toggle back to not completed
+    let toggle2 = app
+        .oneshot(
+            authed(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!(
+                        "/api/experiments/{}/tasks/{}/complete",
+                        exp_id, task_id
+                    ))
+                    .header("content-type", "application/json"),
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(toggle2.status(), StatusCode::OK);
+    let toggle2_bytes = toggle2.into_body().collect().await.unwrap().to_bytes();
+    let updated2: serde_json::Value = serde_json::from_slice(&toggle2_bytes).unwrap();
+    assert_eq!(updated2["tasks"][0]["completed"], false);
+}

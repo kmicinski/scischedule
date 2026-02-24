@@ -858,6 +858,13 @@ function beginInlineCreate(date, parentEl) {
   });
 }
 
+async function toggleExperimentTaskCompleted(experimentId, taskId) {
+  await api(`/api/experiments/${experimentId}/tasks/${taskId}/complete`, {
+    method: "PATCH",
+  });
+  await refreshAll();
+}
+
 async function toggleStandaloneTaskCompleted(taskId) {
   const task = state.standaloneTasks.find((t) => t.id === taskId);
   if (!task) return;
@@ -1408,6 +1415,10 @@ function drawTaskRows(cellEl, cell, previews) {
         : protocolColor(row.protocolId);
     div.style.setProperty("--proto-color", color);
 
+    if (row.kind === "task" && row.task.completed) {
+      div.classList.add("completed");
+    }
+
     if (row.kind === "ghost") {
       div.innerHTML = `
         <div class="task-row-main">
@@ -1418,11 +1429,26 @@ function drawTaskRows(cellEl, cell, previews) {
     } else {
       div.innerHTML = `
         <div class="task-row-main">
+          ${row.kind === "task" ? '<label class="standalone-check-wrap month-task-check-wrap"><input type="checkbox" class="standalone-check" /></label>' : ""}
           ${row.kind === "task" ? '<span class="drag-handle" title="Drag to move">::</span>' : ""}
           <div class="task-row-text">${escapeHtml(row.text)}</div>
           ${row.movingAway ? '<span class="moving-away-badge" title="Will shift when confirmed">&rarr;</span>' : ""}
         </div>
       `;
+    }
+
+    // Wire up completion checkbox for real tasks
+    if (row.kind === "task") {
+      const checkEl = div.querySelector(".standalone-check");
+      if (checkEl) {
+        checkEl.checked = row.task.completed;
+        const checkWrap = checkEl.closest(".standalone-check-wrap");
+        checkWrap.addEventListener("click", (e) => e.stopPropagation());
+        checkEl.addEventListener("change", (e) => {
+          e.stopPropagation();
+          toggleExperimentTaskCompleted(row.experimentId, row.task.id);
+        });
+      }
     }
 
     // Real tasks: draggable (unless moving away in a staged move)
@@ -1458,6 +1484,7 @@ function drawTaskRows(cellEl, cell, previews) {
       });
 
       div.addEventListener("click", (e) => {
+        if (e.target.closest(".standalone-check-wrap")) return;
         e.stopPropagation();
         if (isTouchInteraction()) {
           // Touch: toggle selection for tap-to-move
@@ -1940,6 +1967,7 @@ function buildWeekTaskCard(task, index) {
   if (isSelected) classes.push("exp-selected");
   if (task.deviation) classes.push("deviation");
   if (shifted) classes.push("ghost");
+  if (task.completed) classes.push("completed");
   card.className = classes.join(" ");
   card.style.borderLeftColor = experimentColor(expId);
   card.draggable = !shifted && !isTouchInteraction();
@@ -1968,6 +1996,7 @@ function buildWeekTaskCard(task, index) {
   });
 
   card.addEventListener("click", (e) => {
+    if (e.target.closest(".standalone-check-wrap")) return;
     if (isTouchInteraction()) {
       e.stopPropagation();
       if (state.touchMoveSource && state.touchMoveSource.taskId === task.id) {
@@ -2041,6 +2070,7 @@ function buildWeekTaskCard(task, index) {
 
   card.innerHTML = `
     <div class="week-task-left">
+      ${!shifted ? '<label class="standalone-check-wrap"><input type="checkbox" class="standalone-check" /></label>' : ""}
       ${!shifted ? '<span class="week-drag-handle" title="Drag to reorder">&#8942;&#8942;</span>' : ""}
       <span class="week-task-priority">${index + 1}</span>
     </div>
@@ -2056,6 +2086,16 @@ function buildWeekTaskCard(task, index) {
   `;
 
   if (!shifted) {
+    const checkEl = card.querySelector(".standalone-check");
+    if (checkEl) {
+      checkEl.checked = task.completed;
+      const checkWrap = checkEl.closest(".standalone-check-wrap");
+      checkWrap.addEventListener("click", (e) => e.stopPropagation());
+      checkEl.addEventListener("change", (e) => {
+        e.stopPropagation();
+        toggleExperimentTaskCompleted(expId, task.id);
+      });
+    }
     const noteBtn = card.querySelector(".week-note-btn");
     if (noteBtn) {
       noteBtn.addEventListener("click", (e) => {

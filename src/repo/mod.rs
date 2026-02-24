@@ -251,6 +251,7 @@ mod tests {
                 planned_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
                 day_priority: 0,
                 deviation: None,
+                completed: false,
             }],
             created_by: "alice".into(),
             created_at: 10,
