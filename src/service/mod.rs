@@ -311,6 +311,32 @@ impl<R: Repository> AppService<R> {
         Ok(experiment)
     }
 
+    /// Delete a single task from an experiment. If it was the last task,
+    /// delete the entire experiment and return `Ok(None)`.
+    pub fn delete_experiment_task(
+        &self,
+        experiment_id: ExperimentId,
+        task_id: crate::domain::TaskId,
+        user: &str,
+    ) -> Result<Option<Experiment>, ServiceError> {
+        let mut experiment = self.repo.get_experiment(experiment_id)?;
+        if experiment.created_by != user {
+            return Err(ServiceError::Forbidden);
+        }
+        if !experiment.tasks.iter().any(|t| t.id == task_id) {
+            return Err(ServiceError::NotFound);
+        }
+        experiment.tasks.retain(|t| t.id != task_id);
+        if experiment.tasks.is_empty() {
+            self.repo.delete_experiment(experiment_id)?;
+            Ok(None)
+        } else {
+            experiment.updated_at = Utc::now().timestamp();
+            self.repo.upsert_experiment(&experiment)?;
+            Ok(Some(experiment))
+        }
+    }
+
     pub fn month_view(
         &self,
         year: i32,

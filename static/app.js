@@ -1074,6 +1074,12 @@ async function deleteExperiment(experimentId) {
   await refreshAll();
 }
 
+async function deleteExperimentTask(experimentId, taskId) {
+  if (!confirm("Delete this task? This cannot be undone.")) return;
+  await api(`/api/experiments/${experimentId}/tasks/${taskId}`, { method: "DELETE" });
+  await refreshAll();
+}
+
 async function saveExpandedStandaloneTask(taskId) {
   const card = document.querySelector(`.standalone-expanded[data-task-id="${taskId}"]`);
   if (!card) return;
@@ -2322,13 +2328,6 @@ async function renderDay() {
   dayGrid.innerHTML = "";
   dayGrid.classList.toggle("has-selection", Boolean(state.selectedExperimentId));
 
-  // Unassigned column (left side)
-  const unassigned = standaloneTasksUnassigned({ ignoreHidden: true });
-  const unassignedWrap = document.createElement("section");
-  unassignedWrap.className = "week-day week-unassigned-column";
-  renderWeekUnassignedContent(unassignedWrap, unassigned, weekView);
-  dayGrid.appendChild(unassignedWrap);
-
   // Day column
   if (wd) {
     const wrap = document.createElement("section");
@@ -2547,7 +2546,7 @@ function buildWeekTaskCard(task) {
       ${!shifted ? '<button type="button" class="week-reorder-btn reorder-up" title="Move up">&#9650;</button>' : ""}
       ${!shifted ? '<button type="button" class="week-reorder-btn reorder-down" title="Move down">&#9660;</button>' : ""}
       ${!shifted ? '<button type="button" class="week-note-btn" title="Add or edit task note">Note</button>' : ""}
-      ${!shifted ? `<button type="button" class="week-exp-delete-btn" data-exp-id="${expId}" title="Delete this experiment">\u00d7</button>` : ""}
+      ${!shifted ? `<button type="button" class="week-exp-delete-btn" data-exp-id="${expId}" title="Delete this task">\u00d7</button>` : ""}
     </div>
     ${taskNote ? `<div class="week-note">${escapeHtml(taskNote)}</div>` : ""}
   `;
@@ -2588,7 +2587,7 @@ function buildWeekTaskCard(task) {
     if (expDelBtn) {
       expDelBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        deleteExperiment(expId);
+        deleteExperimentTask(expId, task.id);
       });
     }
 

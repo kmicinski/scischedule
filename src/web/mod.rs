@@ -41,6 +41,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/experiments/:id/lock", post(lock_experiment))
         .route("/api/experiments/:id/tasks/move", patch(move_task))
         .route("/api/experiments/:id/tasks/reorder", patch(reorder_task))
+        .route("/api/experiments/:id/tasks/:task_id", delete(delete_experiment_task_handler))
         .route("/api/experiments/:id/tasks/:task_id/complete", patch(toggle_task_completed))
         .route("/api/experiments/:id/tasks/:task_id/rename", patch(rename_task_handler))
         .route(
@@ -202,6 +203,15 @@ async fn toggle_task_completed(
     Ok(Json(
         service.toggle_task_completed(id, task_id, &user.username)?,
     ))
+}
+
+async fn delete_experiment_task_handler(
+    State(service): State<AppState>,
+    user: AuthUser,
+    Path((id, task_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    service.delete_experiment_task(id, task_id, &user.username)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn rename_task_handler(
