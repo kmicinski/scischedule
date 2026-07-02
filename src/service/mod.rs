@@ -32,6 +32,22 @@ pub enum ServiceError {
     Unauthorized,
 }
 
+const MAX_NAME_LEN: usize = 500;
+
+fn validate_name(name: &str, field: &str) -> Result<(), ServiceError> {
+    if name.trim().is_empty() {
+        return Err(ServiceError::InvalidProtocolEdit(format!(
+            "{field} cannot be empty"
+        )));
+    }
+    if name.len() > MAX_NAME_LEN {
+        return Err(ServiceError::InvalidProtocolEdit(format!(
+            "{field} too long"
+        )));
+    }
+    Ok(())
+}
+
 pub struct AppService<R: Repository> {
     repo: Arc<R>,
 }
@@ -46,6 +62,17 @@ impl<R: Repository> AppService<R> {
         req: CreateProtocolRequest,
         user: &str,
     ) -> Result<Protocol, ServiceError> {
+        validate_name(&req.name, "protocol name")?;
+        if req.description.len() > MAX_NAME_LEN {
+            return Err(ServiceError::InvalidProtocolEdit(
+                "description too long".to_string(),
+            ));
+        }
+        if req.steps.is_empty() {
+            return Err(ServiceError::InvalidProtocolEdit(
+                "protocol must have at least one step".to_string(),
+            ));
+        }
         let now = Utc::now().timestamp();
         let protocol = Protocol {
             id: Uuid::new_v4(),
@@ -69,6 +96,17 @@ impl<R: Repository> AppService<R> {
         req: CreateProtocolRequest,
         user: &str,
     ) -> Result<Protocol, ServiceError> {
+        validate_name(&req.name, "protocol name")?;
+        if req.description.len() > MAX_NAME_LEN {
+            return Err(ServiceError::InvalidProtocolEdit(
+                "description too long".to_string(),
+            ));
+        }
+        if req.steps.is_empty() {
+            return Err(ServiceError::InvalidProtocolEdit(
+                "protocol must have at least one step".to_string(),
+            ));
+        }
         let existing = self.repo.get_protocol(id)?;
 
         if !existing.created_by.is_empty() && existing.created_by != user {
@@ -142,11 +180,7 @@ impl<R: Repository> AppService<R> {
         new_name: String,
         user: &str,
     ) -> Result<Protocol, ServiceError> {
-        if new_name.trim().is_empty() {
-            return Err(ServiceError::InvalidProtocolEdit(
-                "step name cannot be empty".to_string(),
-            ));
-        }
+        validate_name(&new_name, "step name")?;
 
         let mut protocol = self.repo.get_protocol(protocol_id)?;
 
@@ -284,6 +318,23 @@ impl<R: Repository> AppService<R> {
         Ok(experiment)
     }
 
+    pub fn rename_experiment(
+        &self,
+        experiment_id: ExperimentId,
+        new_name: String,
+        user: &str,
+    ) -> Result<Experiment, ServiceError> {
+        validate_name(&new_name, "experiment name")?;
+        let mut experiment = self.repo.get_experiment(experiment_id)?;
+        if experiment.created_by != user {
+            return Err(ServiceError::Forbidden);
+        }
+        experiment.protocol_name = new_name;
+        experiment.updated_at = Utc::now().timestamp();
+        self.repo.upsert_experiment(&experiment)?;
+        Ok(experiment)
+    }
+
     pub fn rename_task(
         &self,
         experiment_id: ExperimentId,
@@ -291,11 +342,7 @@ impl<R: Repository> AppService<R> {
         new_name: String,
         user: &str,
     ) -> Result<Experiment, ServiceError> {
-        if new_name.trim().is_empty() {
-            return Err(ServiceError::InvalidProtocolEdit(
-                "task name cannot be empty".to_string(),
-            ));
-        }
+        validate_name(&new_name, "task name")?;
         let mut experiment = self.repo.get_experiment(experiment_id)?;
         if experiment.created_by != user {
             return Err(ServiceError::Forbidden);
@@ -349,7 +396,7 @@ impl<R: Repository> AppService<R> {
             .into_iter()
             .filter(|e| e.created_by == user)
             .collect();
-        Ok(build_month_view(&experiments, year, month))
+        Ok(build_month_view(&experiments, year, month)?)
     }
 
     pub fn week_view(
@@ -426,6 +473,7 @@ impl<R: Repository> AppService<R> {
         req: CreateStandaloneTaskRequest,
         user: &str,
     ) -> Result<StandaloneTask, ServiceError> {
+        validate_name(&req.title, "task title")?;
         if let Some(c) = req.color_tag {
             if c >= 8 {
                 return Err(ServiceError::InvalidProtocolEdit(
@@ -461,6 +509,9 @@ impl<R: Repository> AppService<R> {
         let mut task = self.repo.get_standalone_task(id)?;
         if task.created_by != user {
             return Err(ServiceError::Forbidden);
+        }
+        if let Some(ref title) = req.title {
+            validate_name(title, "task title")?;
         }
         if let Some(title) = req.title {
             task.title = title;
@@ -754,8 +805,7 @@ mod tests {
             .create_protocol(sample_create_protocol(), "alice")
             .unwrap();
 
-        let exp = svc
-            .plan_experiment(
+        svc.plan_experiment(
                 PlanExperimentRequest {
                     protocol_id: p.id,
                     start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
@@ -1052,5 +1102,531 @@ mod tests {
         assert_eq!(alice_tasks, 2);
         assert_eq!(bob_tasks, 2);
         assert_eq!(charlie_tasks, 0);
+    }
+
+    // ── Helper: create protocol + experiment for a user ──────────
+
+    fn setup_experiment(svc: &AppService<MemRepo>, user: &str) -> (Protocol, Experiment) {
+        let p = svc
+            .create_protocol(sample_create_protocol(), user)
+            .unwrap();
+        let e = svc
+            .plan_experiment(
+                PlanExperimentRequest {
+                    protocol_id: p.id,
+                    start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
+                },
+                user,
+            )
+            .unwrap();
+        (p, e)
+    }
+
+    // ── 2.1  delete_experiment_task tests ────────────────────────
+
+    #[test]
+    fn delete_middle_task_keeps_experiment() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let (_p, e) = setup_experiment(&svc, "alice");
+        assert_eq!(e.tasks.len(), 2);
+
+        let result = svc
+            .delete_experiment_task(e.id, e.tasks[0].id, "alice")
+            .unwrap();
+        let remaining = result.expect("experiment should still exist");
+        assert_eq!(remaining.tasks.len(), 1);
+        assert_eq!(remaining.tasks[0].id, e.tasks[1].id);
+    }
+
+    #[test]
+    fn delete_last_task_deletes_experiment() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let (_p, e) = setup_experiment(&svc, "alice");
+
+        // Delete first task
+        svc.delete_experiment_task(e.id, e.tasks[0].id, "alice")
+            .unwrap();
+        // Delete second (last) task
+        let result = svc
+            .delete_experiment_task(e.id, e.tasks[1].id, "alice")
+            .unwrap();
+        assert!(result.is_none(), "experiment should be auto-deleted");
+
+        // Verify experiment is gone
+        assert!(svc.list_experiments("alice").unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_experiment_task_not_found() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let (_p, e) = setup_experiment(&svc, "alice");
+
+        let err = svc
+            .delete_experiment_task(e.id, Uuid::new_v4(), "alice")
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::NotFound));
+    }
+
+    #[test]
+    fn delete_experiment_task_forbidden_for_other_user() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let (_p, e) = setup_experiment(&svc, "alice");
+
+        let err = svc
+            .delete_experiment_task(e.id, e.tasks[0].id, "bob")
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::Forbidden));
+    }
+
+    // ── 2.2  Cross-user authorization tests ─────────────────────
+
+    #[test]
+    fn move_task_forbidden_for_other_user() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let (_p, e) = setup_experiment(&svc, "alice");
+
+        let err = svc
+            .move_task(
+                e.id,
+                MoveTaskRequest {
+                    task_id: e.tasks[0].id,
+                    new_date: NaiveDate::from_ymd_opt(2026, 2, 10).unwrap(),
+                    reason: "test".into(),
+                },
+                "bob",
+            )
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::Forbidden));
+    }
+
+    #[test]
+    fn delete_experiment_forbidden_for_other_user() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let (_p, e) = setup_experiment(&svc, "alice");
+
+        let err = svc.delete_experiment(e.id, "bob").unwrap_err();
+        assert!(matches!(err, ServiceError::Forbidden));
+    }
+
+    #[test]
+    fn toggle_task_completed_forbidden_for_other_user() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let (_p, e) = setup_experiment(&svc, "alice");
+
+        let err = svc
+            .toggle_task_completed(e.id, e.tasks[0].id, "bob")
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::Forbidden));
+    }
+
+    #[test]
+    fn rename_task_forbidden_for_other_user() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let (_p, e) = setup_experiment(&svc, "alice");
+
+        let err = svc
+            .rename_task(e.id, e.tasks[0].id, "New".into(), "bob")
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::Forbidden));
+    }
+
+    #[test]
+    fn reorder_task_forbidden_for_other_user() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let (_p, e) = setup_experiment(&svc, "alice");
+
+        let err = svc
+            .reorder_task(
+                e.id,
+                ReorderTaskRequest {
+                    task_id: e.tasks[0].id,
+                    new_priority: 5,
+                },
+                "bob",
+            )
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::Forbidden));
+    }
+
+    // ── 2.3  Input validation tests ─────────────────────────────
+
+    #[test]
+    fn create_protocol_rejects_empty_steps() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+
+        let err = svc
+            .create_protocol(
+                CreateProtocolRequest {
+                    name: "No Steps".into(),
+                    description: "test".into(),
+                    steps: vec![],
+                },
+                "alice",
+            )
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::InvalidProtocolEdit(_)));
+    }
+
+    #[test]
+    fn create_protocol_rejects_long_name() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+
+        let long_name = "x".repeat(501);
+        let err = svc
+            .create_protocol(
+                CreateProtocolRequest {
+                    name: long_name,
+                    description: "test".into(),
+                    steps: vec![CreateProtocolStepRequest {
+                        name: "S".into(),
+                        details: "".into(),
+                        parent_step_indexes: vec![],
+                        default_offset_days: 0,
+                    }],
+                },
+                "alice",
+            )
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::InvalidProtocolEdit(_)));
+    }
+
+    #[test]
+    fn rename_step_rejects_empty() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let p = svc
+            .create_protocol(sample_create_protocol(), "alice")
+            .unwrap();
+
+        let err = svc
+            .rename_step(p.id, p.steps[0].id, "".into(), "alice")
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::InvalidProtocolEdit(_)));
+
+        let err = svc
+            .rename_step(p.id, p.steps[0].id, "   ".into(), "alice")
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::InvalidProtocolEdit(_)));
+    }
+
+    #[test]
+    fn rename_task_rejects_empty() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let (_p, e) = setup_experiment(&svc, "alice");
+
+        let err = svc
+            .rename_task(e.id, e.tasks[0].id, "".into(), "alice")
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::InvalidProtocolEdit(_)));
+    }
+
+    #[test]
+    fn rename_step_rejects_long_name() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let p = svc
+            .create_protocol(sample_create_protocol(), "alice")
+            .unwrap();
+
+        let long = "x".repeat(501);
+        let err = svc
+            .rename_step(p.id, p.steps[0].id, long, "alice")
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::InvalidProtocolEdit(_)));
+    }
+
+    #[test]
+    fn rename_task_rejects_long_name() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let (_p, e) = setup_experiment(&svc, "alice");
+
+        let long = "x".repeat(501);
+        let err = svc
+            .rename_task(e.id, e.tasks[0].id, long, "alice")
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::InvalidProtocolEdit(_)));
+    }
+
+    // ── 2.4  Standalone task lifecycle tests ────────────────────
+
+    #[test]
+    fn standalone_task_create_and_verify() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+
+        let task = svc
+            .create_standalone_task(
+                CreateStandaloneTaskRequest {
+                    title: "Buy reagents".into(),
+                    date: Some(NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()),
+                    notes: Some("important".into()),
+                    time_of_day: None,
+                    color_tag: Some(2),
+                    experiment_id: None,
+                },
+                "alice",
+            )
+            .unwrap();
+
+        assert_eq!(task.title, "Buy reagents");
+        assert_eq!(
+            task.date,
+            Some(NaiveDate::from_ymd_opt(2026, 3, 1).unwrap())
+        );
+        assert_eq!(task.notes, "important");
+        assert_eq!(task.color_tag, Some(2));
+        assert!(!task.completed);
+        assert_eq!(task.created_by, "alice");
+    }
+
+    #[test]
+    fn standalone_task_update_fields() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let task = svc
+            .create_standalone_task(
+                CreateStandaloneTaskRequest {
+                    title: "Original".into(),
+                    date: None,
+                    notes: None,
+                    time_of_day: None,
+                    color_tag: None,
+                    experiment_id: None,
+                },
+                "alice",
+            )
+            .unwrap();
+
+        let updated = svc
+            .update_standalone_task(
+                task.id,
+                UpdateStandaloneTaskRequest {
+                    title: Some("Updated".into()),
+                    notes: Some("new notes".into()),
+                    color_tag: Some(Some(3)),
+                    date: Some(Some(NaiveDate::from_ymd_opt(2026, 4, 1).unwrap())),
+                    completed: Some(true),
+                    time_of_day: None,
+                    sort_order: None,
+                    experiment_id: None,
+                },
+                "alice",
+            )
+            .unwrap();
+
+        assert_eq!(updated.title, "Updated");
+        assert_eq!(updated.notes, "new notes");
+        assert_eq!(updated.color_tag, Some(3));
+        assert_eq!(
+            updated.date,
+            Some(NaiveDate::from_ymd_opt(2026, 4, 1).unwrap())
+        );
+        assert!(updated.completed);
+    }
+
+    #[test]
+    fn standalone_task_color_tag_8_rejected() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+
+        let err = svc
+            .create_standalone_task(
+                CreateStandaloneTaskRequest {
+                    title: "Bad color".into(),
+                    date: None,
+                    notes: None,
+                    time_of_day: None,
+                    color_tag: Some(8),
+                    experiment_id: None,
+                },
+                "alice",
+            )
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::InvalidProtocolEdit(_)));
+    }
+
+    #[test]
+    fn standalone_task_delete() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let task = svc
+            .create_standalone_task(
+                CreateStandaloneTaskRequest {
+                    title: "Deletable".into(),
+                    date: None,
+                    notes: None,
+                    time_of_day: None,
+                    color_tag: None,
+                    experiment_id: None,
+                },
+                "alice",
+            )
+            .unwrap();
+
+        svc.delete_standalone_task(task.id, "alice").unwrap();
+        assert!(svc.list_standalone_tasks("alice").unwrap().is_empty());
+    }
+
+    #[test]
+    fn standalone_task_delete_forbidden_for_other_user() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let task = svc
+            .create_standalone_task(
+                CreateStandaloneTaskRequest {
+                    title: "Mine".into(),
+                    date: None,
+                    notes: None,
+                    time_of_day: None,
+                    color_tag: None,
+                    experiment_id: None,
+                },
+                "alice",
+            )
+            .unwrap();
+
+        let err = svc.delete_standalone_task(task.id, "bob").unwrap_err();
+        assert!(matches!(err, ServiceError::Forbidden));
+    }
+
+    #[test]
+    fn standalone_task_update_forbidden_for_other_user() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let task = svc
+            .create_standalone_task(
+                CreateStandaloneTaskRequest {
+                    title: "Mine".into(),
+                    date: None,
+                    notes: None,
+                    time_of_day: None,
+                    color_tag: None,
+                    experiment_id: None,
+                },
+                "alice",
+            )
+            .unwrap();
+
+        let err = svc
+            .update_standalone_task(
+                task.id,
+                UpdateStandaloneTaskRequest {
+                    title: Some("Stolen".into()),
+                    notes: None,
+                    time_of_day: None,
+                    color_tag: None,
+                    date: None,
+                    completed: None,
+                    sort_order: None,
+                    experiment_id: None,
+                },
+                "bob",
+            )
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::Forbidden));
+    }
+
+    #[test]
+    fn standalone_task_title_validation() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+
+        // Empty title rejected
+        let err = svc
+            .create_standalone_task(
+                CreateStandaloneTaskRequest {
+                    title: "".into(),
+                    date: None,
+                    notes: None,
+                    time_of_day: None,
+                    color_tag: None,
+                    experiment_id: None,
+                },
+                "alice",
+            )
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::InvalidProtocolEdit(_)));
+
+        // Long title rejected
+        let err = svc
+            .create_standalone_task(
+                CreateStandaloneTaskRequest {
+                    title: "x".repeat(501),
+                    date: None,
+                    notes: None,
+                    time_of_day: None,
+                    color_tag: None,
+                    experiment_id: None,
+                },
+                "alice",
+            )
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::InvalidProtocolEdit(_)));
+    }
+
+    // ── 2.6  Rename cascade test ────────────────────────────────
+
+    #[test]
+    fn rename_step_cascades_to_experiment_tasks() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(Arc::clone(&repo));
+        let p = svc
+            .create_protocol(sample_create_protocol(), "alice")
+            .unwrap();
+        let e = svc
+            .plan_experiment(
+                PlanExperimentRequest {
+                    protocol_id: p.id,
+                    start_date: NaiveDate::from_ymd_opt(2026, 2, 5).unwrap(),
+                },
+                "alice",
+            )
+            .unwrap();
+
+        // Tasks initially have original step names. Task order is not
+        // guaranteed to match step declaration order, so look up by step id.
+        let first_task = e
+            .tasks
+            .iter()
+            .find(|t| t.step_id == p.steps[0].id)
+            .unwrap();
+        assert_eq!(first_task.step_name, "Step 1");
+
+        // Rename the first step
+        svc.rename_step(p.id, p.steps[0].id, "Step 1 Renamed".into(), "alice")
+            .unwrap();
+
+        // Verify cascade to experiment tasks
+        let experiments = svc.list_experiments("alice").unwrap();
+        let exp = &experiments[0];
+        let task = exp.tasks.iter().find(|t| t.step_id == p.steps[0].id).unwrap();
+        assert_eq!(task.step_name, "Step 1 Renamed");
+    }
+
+    #[test]
+    fn rename_step_forbidden_for_other_user() {
+        let repo = Arc::new(MemRepo::default());
+        let svc = AppService::new(repo);
+        let p = svc
+            .create_protocol(sample_create_protocol(), "alice")
+            .unwrap();
+
+        let err = svc
+            .rename_step(p.id, p.steps[0].id, "Hacked".into(), "bob")
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::Forbidden));
     }
 }

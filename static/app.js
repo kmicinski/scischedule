@@ -1535,7 +1535,7 @@ function drawMonthGrid() {
 
     drawTaskRows(div, cell, previewByDate.get(cell.date) || []);
 
-    div.addEventListener("click", (e) => {
+    div.addEventListener("click", async (e) => {
       // Touch move: tap destination cell
       if (isTouchInteraction() && state.touchMoveSource) {
         const src = state.touchMoveSource;
@@ -1545,7 +1545,7 @@ function drawMonthGrid() {
           return;
         }
         clearTouchMoveState();
-        stageMove(src.experimentId, src.taskId, cell.date);
+        await directMove(src.experimentId, src.taskId, cell.date);
         return;
       }
       // Touch place protocol
@@ -1569,7 +1569,7 @@ function drawMonthGrid() {
       }
     });
 
-    // Dragover: lightweight — no stageMove, no DOM rebuild.
+    // Dragover: lightweight — no move, no DOM rebuild.
     // Just highlight the cell and check constraints.
     div.addEventListener("dragover", (e) => {
       const drag = readDragPayload(e.dataTransfer);
@@ -1617,7 +1617,7 @@ function drawMonthGrid() {
     });
 
     // Drop: stage the move here (single repaint)
-    div.addEventListener("drop", (e) => {
+    div.addEventListener("drop", async (e) => {
       e.preventDefault();
       div.classList.remove("drag-over");
       div.classList.remove("adjust-invalid");
@@ -1627,7 +1627,7 @@ function drawMonthGrid() {
         beginPlacement(drag.protocolId || state.placement?.protocolId, cell.date);
         drawMonthGrid();
       } else if (drag?.kind === "task" && drag.taskId) {
-        directMove(
+        await directMove(
           resolveTaskExperimentId(drag.taskId, drag.experimentId),
           drag.taskId,
           cell.date,
@@ -1800,7 +1800,6 @@ function drawTaskRows(cellEl, cell, previews) {
         // Clear any existing pending move when starting a new drag
         if (state.pendingMove) {
           state.pendingMove = null;
-          dismissMovePopover();
         }
         div.classList.add("dragging");
         document.body.classList.add("drag-task-active");
@@ -2137,7 +2136,7 @@ async function renderWeek(options = {}) {
         return;
       }
       if (drag?.kind === "task" && drag.taskId) {
-        directMove(
+        await directMove(
           resolveTaskExperimentId(drag.taskId, drag.experimentId),
           drag.taskId,
           wd.date,
@@ -2147,7 +2146,7 @@ async function renderWeek(options = {}) {
     });
 
     // Touch move: tap on week day to move task here
-    wrap.addEventListener("click", (e) => {
+    wrap.addEventListener("click", async (e) => {
       if (!isTouchInteraction() || !state.touchMoveSource) return;
       if (e.target.closest(".week-task")) return;
       const src = state.touchMoveSource;
@@ -2157,7 +2156,7 @@ async function renderWeek(options = {}) {
         return;
       }
       clearTouchMoveState();
-      stageMove(src.experimentId, src.taskId, wd.date);
+      await directMove(src.experimentId, src.taskId, wd.date);
     });
 
     renderWeekDayContent(wrap, wd, weekView);
@@ -2399,7 +2398,7 @@ async function renderDay() {
         return;
       }
       if (drag?.kind === "task" && drag.taskId) {
-        directMove(
+        await directMove(
           resolveTaskExperimentId(drag.taskId, drag.experimentId),
           drag.taskId,
           wd.date,
@@ -2408,7 +2407,7 @@ async function renderDay() {
       clearActiveDrag();
     });
 
-    wrap.addEventListener("click", (e) => {
+    wrap.addEventListener("click", async (e) => {
       if (!isTouchInteraction() || !state.touchMoveSource) return;
       if (e.target.closest(".week-task")) return;
       const src = state.touchMoveSource;
@@ -2418,7 +2417,7 @@ async function renderDay() {
         return;
       }
       clearTouchMoveState();
-      stageMove(src.experimentId, src.taskId, wd.date);
+      await directMove(src.experimentId, src.taskId, wd.date);
     });
 
     renderWeekDayContent(wrap, wd, weekView);
@@ -2448,7 +2447,6 @@ function buildWeekTaskCard(task) {
   card.addEventListener("dragstart", (e) => {
     if (state.pendingMove) {
       state.pendingMove = null;
-      dismissMovePopover();
     }
     setDragPayload(e, {
       kind: "task",
@@ -2901,13 +2899,7 @@ function buildPlacementTasksByDate() {
   return out;
 }
 
-/* ── Move staging (drag task to new date) ───────────────────────── */
-
-function stageMove(experimentId, taskId, toDate) {
-  // Direct move: immediately call the API instead of showing a popover
-  directMove(experimentId, taskId, toDate);
-  return true;
-}
+/* ── Move (drag task to new date) ────────────────────────────────── */
 
 async function directMove(experimentId, taskId, toDate) {
   const ctx = state.taskContext.get(taskId);

@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::{
     domain::{
         CreateProtocolRequest, CreateStandaloneTaskRequest, MoveTaskRequest,
-        PlanExperimentRequest, RenameStepRequest, RenameTaskRequest, ReorderTaskRequest, UpdateStandaloneTaskRequest,
+        PlanExperimentRequest, RenameExperimentRequest, RenameStepRequest, RenameTaskRequest, ReorderTaskRequest, UpdateStandaloneTaskRequest,
     },
     repo::SledRepo,
     service::{AppService, ServiceError},
@@ -39,6 +39,7 @@ pub fn router(state: AppState) -> Router {
             delete(delete_experiment_handler),
         )
         .route("/api/experiments/:id/lock", post(lock_experiment))
+        .route("/api/experiments/:id/rename", patch(rename_experiment_handler))
         .route("/api/experiments/:id/tasks/move", patch(move_task))
         .route("/api/experiments/:id/tasks/reorder", patch(reorder_task))
         .route("/api/experiments/:id/tasks/:task_id", delete(delete_experiment_task_handler))
@@ -212,6 +213,17 @@ async fn delete_experiment_task_handler(
 ) -> Result<StatusCode, ApiError> {
     service.delete_experiment_task(id, task_id, &user.username)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn rename_experiment_handler(
+    State(service): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(req): Json<RenameExperimentRequest>,
+) -> Result<Json<crate::domain::Experiment>, ApiError> {
+    Ok(Json(
+        service.rename_experiment(id, req.name, &user.username)?,
+    ))
 }
 
 async fn rename_task_handler(

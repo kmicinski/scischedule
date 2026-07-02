@@ -156,6 +156,11 @@ pub struct RenameTaskRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RenameExperimentRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StandaloneTask {
     pub id: StandaloneTaskId,
     pub title: String,

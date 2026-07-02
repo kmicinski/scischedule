@@ -22,6 +22,8 @@ pub enum ScheduleError {
     ViolatesParentConstraint,
     #[error("cannot move task after its child constraint")]
     ViolatesChildConstraint,
+    #[error("invalid month/year")]
+    InvalidMonth,
 }
 
 pub fn validate_protocol(protocol: &Protocol) -> Result<(), ScheduleError> {
@@ -176,9 +178,12 @@ pub fn move_task_with_constraints(
         experiment.tasks.iter().map(|t| (t.step_id, t.date)).collect();
 
     for step in &protocol.steps {
-        let child_old = *task_date_by_step
-            .get(&step.id)
-            .ok_or(ScheduleError::TaskNotFound)?;
+        // A task for this step may have been individually deleted from the
+        // experiment (the protocol still keeps the step). With no task there
+        // is no parent constraint to enforce for it, so skip it.
+        let Some(&child_old) = task_date_by_step.get(&step.id) else {
+            continue;
+        };
         let child_new = if shifted_step_ids.contains(&step.id) {
             child_old + Duration::days(delta_days)
         } else {
@@ -186,9 +191,11 @@ pub fn move_task_with_constraints(
         };
 
         for parent_id in &step.parent_step_ids {
-            let parent_old = *task_date_by_step
-                .get(parent_id)
-                .ok_or(ScheduleError::TaskNotFound)?;
+            // Likewise, the parent step's task may have been deleted; a
+            // non-existent parent imposes no date constraint.
+            let Some(&parent_old) = task_date_by_step.get(parent_id) else {
+                continue;
+            };
             let parent_new = if shifted_step_ids.contains(parent_id) {
                 parent_old + Duration::days(delta_days)
             } else {
@@ -263,14 +270,14 @@ pub fn reorder_task_for_day(
     Ok(())
 }
 
-pub fn build_month_view(experiments: &[Experiment], year: i32, month: u32) -> MonthView {
-    let first = NaiveDate::from_ymd_opt(year, month, 1).expect("valid month");
+pub fn build_month_view(experiments: &[Experiment], year: i32, month: u32) -> Result<MonthView, ScheduleError> {
+    let first = NaiveDate::from_ymd_opt(year, month, 1).ok_or(ScheduleError::InvalidMonth)?;
     let (ny, nm) = if month == 12 {
         (year + 1, 1)
     } else {
         (year, month + 1)
     };
-    let next = NaiveDate::from_ymd_opt(ny, nm, 1).expect("valid month");
+    let next = NaiveDate::from_ymd_opt(ny, nm, 1).ok_or(ScheduleError::InvalidMonth)?;
     let span_days = (next - first).num_days();
 
     let mut cells: Vec<MonthCell> = (0..span_days)
@@ -293,7 +300,7 @@ pub fn build_month_view(experiments: &[Experiment], year: i32, month: u32) -> Mo
         cell.tasks.sort_by_key(|t| t.day_priority);
     }
 
-    MonthView { year, month, cells }
+    Ok(MonthView { year, month, cells })
 }
 
 pub fn build_week_view(experiments: &[Experiment], week_start: NaiveDate) -> WeekView {
@@ -726,7 +733,7 @@ mod tests {
         let experiment =
             schedule_from_protocol(&protocol, start, "alice".to_string(), 100).unwrap();
 
-        let month = build_month_view(&[experiment], 2026, 2);
+        let month = build_month_view(&[experiment], 2026, 2).unwrap();
         assert_eq!(month.cells.len(), 28);
 
         let feb_8 = month
@@ -796,6 +803,39 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(err, ScheduleError::TaskNotFound);
+    }
+
+    #[test]
+    fn move_task_succeeds_after_a_sibling_task_was_deleted() {
+        // Regression: deleting an individual task leaves its protocol step
+        // behind. Moving any remaining task must not fail with TaskNotFound.
+        let protocol = sample_protocol();
+        let start = NaiveDate::from_ymd_opt(2026, 2, 5).unwrap();
+        let mut experiment =
+            schedule_from_protocol(&protocol, start, "alice".to_string(), 100).unwrap();
+        assert_eq!(experiment.tasks.len(), 3);
+
+        // Delete the middle task ("Drug Treatment"), as the UI delete does.
+        let middle_step = protocol.steps[1].id;
+        experiment.tasks.retain(|t| t.step_id != middle_step);
+        assert_eq!(experiment.tasks.len(), 2);
+
+        // Moving the first task must still succeed.
+        let first_id = experiment
+            .tasks
+            .iter()
+            .find(|t| t.step_id == protocol.steps[0].id)
+            .unwrap()
+            .id;
+        move_task_with_constraints(
+            &mut experiment,
+            &protocol,
+            first_id,
+            NaiveDate::from_ymd_opt(2026, 2, 9).unwrap(),
+            "rescheduled".to_string(),
+            200,
+        )
+        .expect("move should succeed despite the deleted sibling task");
     }
 
     #[test]
@@ -982,5 +1022,90 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(err, ScheduleError::ViolatesParentConstraint);
+    }
+
+    #[test]
+    fn single_step_protocol_schedules_one_task() {
+        let step_id = Uuid::new_v4();
+        let protocol = Protocol {
+            id: Uuid::new_v4(),
+            name: "Single".to_string(),
+            description: "one step".to_string(),
+            steps: vec![ProtocolStep {
+                id: step_id,
+                name: "Only Step".to_string(),
+                details: "".to_string(),
+                parent_step_ids: vec![],
+                default_offset_days: 0,
+            }],
+            created_by: String::new(),
+            created_at: 1,
+            updated_at: 1,
+            archived: false,
+        };
+
+        let start = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
+        let experiment =
+            schedule_from_protocol(&protocol, start, "alice".to_string(), 100).unwrap();
+        assert_eq!(experiment.tasks.len(), 1);
+        assert_eq!(experiment.tasks[0].date, start);
+        assert_eq!(experiment.tasks[0].step_id, step_id);
+    }
+
+    #[test]
+    fn month_view_december_year_boundary() {
+        let month = build_month_view(&[], 2026, 12).unwrap();
+        assert_eq!(month.cells.len(), 31);
+        assert_eq!(
+            month.cells[0].date,
+            NaiveDate::from_ymd_opt(2026, 12, 1).unwrap()
+        );
+        assert_eq!(
+            month.cells[30].date,
+            NaiveDate::from_ymd_opt(2026, 12, 31).unwrap()
+        );
+    }
+
+    #[test]
+    fn month_view_invalid_month_returns_error() {
+        assert_eq!(
+            build_month_view(&[], 2026, 0),
+            Err(ScheduleError::InvalidMonth)
+        );
+        assert_eq!(
+            build_month_view(&[], 2026, 13),
+            Err(ScheduleError::InvalidMonth)
+        );
+    }
+
+    #[test]
+    fn week_view_spanning_year_boundary() {
+        // Dec 29, 2025 is a Monday
+        let week_start = NaiveDate::from_ymd_opt(2025, 12, 29).unwrap();
+        let week = build_week_view(&[], week_start);
+        assert_eq!(week.days.len(), 7);
+        assert_eq!(
+            week.days[0].date,
+            NaiveDate::from_ymd_opt(2025, 12, 29).unwrap()
+        );
+        assert_eq!(
+            week.days[6].date,
+            NaiveDate::from_ymd_opt(2026, 1, 4).unwrap()
+        );
+    }
+
+    #[test]
+    fn empty_experiments_produce_empty_views() {
+        let month = build_month_view(&[], 2026, 2).unwrap();
+        assert_eq!(month.cells.len(), 28);
+        for cell in &month.cells {
+            assert!(cell.tasks.is_empty());
+        }
+
+        let week = build_week_view(&[], NaiveDate::from_ymd_opt(2026, 2, 2).unwrap());
+        assert_eq!(week.days.len(), 7);
+        for day in &week.days {
+            assert!(day.tasks.is_empty());
+        }
     }
 }
